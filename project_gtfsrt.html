@@ -1,0 +1,4171 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transports en temps réel — GTFS-RT</title>
+
+  <link rel="stylesheet"
+        href="https://unpkg.com/maplibre-gl@5.15.0/dist/maplibre-gl.css">
+  <script src="https://unpkg.com/maplibre-gl@5.15.0/dist/maplibre-gl.js"></script>
+
+  <!--
+    NE PAS ajouter gtfs-rt-bindings ici.
+    Ce paquet utilise require() (Node/CommonJS) et provoque :
+    "Uncaught ReferenceError: require is not defined".
+
+    protobuf.js fonctionne directement dans un navigateur.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/protobufjs@8.2.1/dist/protobuf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      overscroll-behavior: none;
+    }
+
+    #panel {
+      position: absolute;
+      z-index: 20;
+      top: 12px;
+      left: 12px;
+      width: min(510px, calc(100vw - 24px));
+      max-height: calc(100vh - 24px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      padding: 0;
+      background: rgba(255,255,255,.97);
+      border-radius: 10px;
+      box-shadow: 0 3px 18px rgba(0,0,0,.22);
+    }
+
+    .panel-header {
+      flex: 0 0 auto;
+      padding: 14px 14px 10px;
+      background: rgba(255,255,255,.99);
+      border-bottom: 1px solid #e3e7eb;
+      box-shadow: 0 2px 6px rgba(0,0,0,.06);
+      z-index: 2;
+    }
+
+    .panel-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+      padding: 10px 14px 14px;
+    }
+
+    .panel-footer {
+      flex: 0 0 auto;
+      min-height: 35px;
+      padding: 8px 14px 9px;
+      background: rgba(255,255,255,.99);
+      border-top: 1px solid #e3e7eb;
+      box-shadow: 0 -2px 6px rgba(0,0,0,.06);
+      z-index: 2;
+    }
+
+    h1 { margin: 0 0 6px; font-size: 18px; }
+
+    .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .panel-heading h1 { margin: 0; font-size: 16px; }
+    #togglePanel { flex: 0 0 auto; font-size: 12px; background: #eef4f8; color: #1769aa; }
+    #testInfo { margin-top: 7px; }
+    #panel.collapsed { width: min(390px, calc(100vw - 24px)); }
+    #panel.collapsed .route-legend { display: none; }
+    #panelBody[hidden] { display: none; }
+    #panel.collapsed .panel-footer { padding: 7px 14px; }
+    .map-network { margin-bottom: 5px; font-weight: 650; color: #1769aa; }
+
+    .intro {
+      font-size: 12px;
+      color: #555;
+      line-height: 1.45;
+    }
+
+    .status {
+      margin: 9px 0;
+      padding: 9px;
+      border-radius: 7px;
+      background: #eef4f8;
+      font-size: 13px;
+    }
+
+    .status.ok { background: #eaf7ec; color: #176b22; }
+    .status.warn { background: #fff7dd; color: #705400; }
+    .status.error { background: #fff0f0; color: #9b0000; }
+
+    .controls {
+      display: flex;
+      gap: 7px;
+      margin: 8px 0;
+    }
+
+    button {
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 6px;
+      background: #1769aa;
+      color: white;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    button.green { background: #237a31; }
+    button.gray { background: #666; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+
+    .dataset {
+      border: 1px solid #ddd;
+      border-radius: 7px;
+      padding: 9px;
+      margin: 6px 0;
+    }
+
+    .dataset-title {
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.3;
+    }
+
+    .dataset-org {
+      margin-top: 3px;
+      font-size: 11px;
+      color: #666;
+    }
+
+    .resource {
+      margin-top: 7px;
+      padding: 8px;
+      border-radius: 6px;
+      background: #f4f6f8;
+    }
+
+    .resource-title {
+      font-size: 11px;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+
+    .url {
+      margin-top: 3px;
+      color: #666;
+      font-size: 10px;
+      word-break: break-all;
+    }
+
+    .details {
+      margin-top: 5px;
+      color: #555;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .resource-role {
+      margin-top: 4px;
+      color: #344054;
+      font-size: 10px;
+      line-height: 1.35;
+      font-weight: 650;
+    }
+
+    .static-status {
+      margin-top: 5px;
+      font-size: 10px;
+      font-weight: 650;
+    }
+
+    .static-status.found { color: #176b22; }
+    .static-status.missing { color: #795900; }
+
+    .actions { margin-top: 6px; }
+
+    .actions button {
+      padding: 5px 7px;
+      font-size: 11px;
+      margin-right: 4px;
+    }
+
+    .badge {
+      display: inline-block;
+      margin-left: 5px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-size: 9px;
+      font-weight: 700;
+      vertical-align: 1px;
+    }
+
+    .badge.ok { background: #d8f1dc; color: #176b22; }
+    .badge.cors { background: #ffe0e0; color: #970000; }
+    .badge.invalid { background: #ffeec7; color: #795900; }
+    .badge.test { background: #e0e8ff; color: #234d9a; }
+
+    #refresh {
+      margin: 0;
+      color: #4f5963;
+      font-size: 11px;
+      line-height: 1.35;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .note {
+      margin-top: 9px;
+      padding: 8px;
+      border-left: 4px solid #d99b00;
+      background: #fffaf0;
+      color: #5e512f;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    #map > .maplibregl-control-container > .maplibregl-ctrl-bottom-right {
+      z-index: 80;
+      right: 6px;
+      bottom: 6px;
+      max-width: calc(100vw - 12px);
+    }
+
+    #map .maplibregl-ctrl-attrib {
+      margin: 0;
+      max-width: min(640px, calc(100vw - 12px));
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(255,255,255,.94);
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .vehicle {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: white;
+      border: 2px solid #333;
+      border-radius: 50%;
+      box-shadow: 0 1px 5px rgba(0,0,0,.45);
+    }
+
+    .vehicle.selected {
+      outline: 4px solid rgba(11,61,145,.46);
+      outline-offset: 2px;
+      box-shadow: 0 0 0 2px #fff, 0 2px 8px rgba(0,0,0,.55);
+    }
+
+.vehicle-svg { width: 32px; height: 32px; display:block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
+    .stop-marker-label {
+      position: absolute; left: 10px; top: -2px;
+      white-space: nowrap; padding: 2px 5px; border-radius: 4px;
+      background: rgba(255,255,255,.92); font-size: 9px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.2);
+      pointer-events: none;
+    }
+    .stop-marker {
+      width: 12px;
+      height: 12px;
+      background: white;
+      border: 3px solid #0b3d91;
+      border-radius: 50%;
+      box-shadow: 0 0 0 2px rgba(255,255,255,.95), 0 1px 5px rgba(0,0,0,.50);
+    }
+
+    .stop-marker.active {
+      width: 15px;
+      height: 15px;
+      border-color: #d97706;
+      background: #fff7ed;
+    }
+
+    .route-legend {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 7px 0 0 24px;
+      color: #5a626b;
+      font-size: 10px;
+    }
+
+    .route-legend-item {
+      display: inline-flex;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .route-line-sample {
+      width: 28px;
+      height: 0;
+      border-top: 6px solid #0b3d91;
+      border-radius: 4px;
+    }
+
+    .route-line-sample.remaining {
+      border-top-width: 5px;
+      border-top-style: dashed;
+      opacity: 1;
+    }
+
+    .progress-row {
+      margin: 7px 0 4px;
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 7px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e7e7e7;
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: inherit;
+      background: #1769aa;
+    }
+
+    .progress-caption {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 3px;
+      color: #666;
+      font-size: 10px;
+    }
+
+    .route-source {
+      color: #666;
+      font-size: 10px;
+    }
+
+    .popup {
+      font-size: 12px;
+      line-height: 1.45;
+      max-width: 300px;
+    }
+
+    .popup .late { color:#b00020; font-weight:700; }
+    .popup .early { color:#0b6b32; font-weight:700; }
+    .popup .ontime { color:#1769aa; font-weight:700; }
+
+    #territory-nav { display: none !important; }
+
+    #atlas-insets {
+      position: absolute;
+      z-index: 14;
+      right: 12px;
+      bottom: calc(var(--map-legal-height, 36px) + 12px);
+      width: calc(100vw - 24px);
+      display: flex;
+      /* Remplir le bas de droite à gauche, puis remonter sur la droite. */
+      flex-direction: row-reverse;
+      flex-wrap: wrap-reverse;
+      justify-content: flex-start;
+      align-content: flex-start;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .atlas-card {
+      flex: 0 0 min(175px, calc((100vw - 48px) / 4));
+      min-width: 0;
+      pointer-events: auto;
+      background: rgba(255,255,255,.96);
+      border: 1px solid rgba(52, 70, 88, .18);
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.14);
+      overflow: hidden;
+      transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease;
+    }
+
+    .atlas-card.active {
+      border-color: #0b3d91;
+      box-shadow: 0 0 0 2px rgba(11,61,145,.22), 0 4px 14px rgba(0,0,0,.18);
+      transform: translateY(-1px);
+    }
+
+    .atlas-card-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 5px 6px 5px 8px;
+      color: #33404c;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.2;
+      border-bottom: 1px solid rgba(52, 70, 88, .08);
+      background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(245,248,251,.95));
+    }
+
+    .atlas-title-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .atlas-expand-btn {
+      flex: 0 0 auto;
+      width: 25px;
+      height: 25px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid #cfd6dd;
+      border-radius: 5px;
+      background: #fff;
+      color: #263746;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1;
+      box-shadow: 0 1px 2px rgba(0,0,0,.07);
+    }
+
+    .atlas-expand-btn:hover,
+    .atlas-expand-btn:focus-visible {
+      background: #edf4fb;
+      border-color: #7aa7c9;
+      outline: none;
+    }
+
+    .atlas-map {
+      width: 100%;
+      height: 98px;
+      height: clamp(36px, calc((100vh - var(--map-legal-height, 36px) - 28px) / 2 - 44px), 98px);
+      background: #f5f5f5;
+    }
+
+    .atlas-card .maplibregl-control-container,
+    .atlas-card .maplibregl-ctrl-bottom-right,
+    .atlas-card .maplibregl-ctrl-bottom-left,
+    .atlas-card .maplibregl-ctrl-top-right,
+    .atlas-card .maplibregl-ctrl-top-left {
+      display: none !important;
+    }
+
+    .atlas-card.expanded {
+      position: fixed;
+      z-index: 60;
+      top: 16px;
+      right: 16px;
+      bottom: calc(var(--map-legal-height, 36px) + 12px);
+      left: min(540px, calc(100vw * .40));
+      border-radius: 12px;
+      border-color: #0b3d91;
+      box-shadow: 0 12px 42px rgba(0,0,0,.30);
+      transform: none;
+    }
+
+    .atlas-card.expanded .atlas-card-title {
+      min-height: 40px;
+      padding: 7px 8px 7px 12px;
+      font-size: 13px;
+    }
+
+    .atlas-card.expanded .atlas-map {
+      height: calc(100% - 40px);
+    }
+
+    .atlas-card.expanded .maplibregl-control-container,
+    .atlas-card.expanded .maplibregl-ctrl-top-right {
+      display: block !important;
+    }
+
+    .atlas-card.expanded .maplibregl-ctrl-bottom-right,
+    .atlas-card.expanded .maplibregl-ctrl-bottom-left,
+    .atlas-card.expanded .maplibregl-ctrl-top-left {
+      display: none !important;
+    }
+
+    body.atlas-expanded #atlas-insets {
+      z-index: 70;
+    }
+
+    body.atlas-expanded::after {
+      content: "";
+      position: fixed;
+      z-index: 50;
+      inset: 0;
+      background: rgba(255,255,255,.60);
+      backdrop-filter: blur(1px);
+      pointer-events: none;
+    }
+
+    @media (max-width: 980px) {
+      .atlas-card.expanded {
+        left: 12px;
+        right: 12px;
+        top: 12px;
+        bottom: calc(var(--map-legal-height, 36px) + 12px);
+      }
+    }
+
+    @media (max-width: 640px) {
+      #atlas-insets {
+        display: none;
+      }
+    }
+
+    .api-settings { margin: 12px 0; border: 1px solid #d7deea; border-radius: 9px; padding: 10px; }
+    .api-settings summary { cursor: pointer; font-weight: 700; }
+    .api-provider { margin: 12px 0; padding: 9px; border-radius: 7px; background: #f3f5fa; }
+    .api-provider label { display: block; margin: 6px 0; font-size: 12px; }
+    .api-provider input[type=password] { box-sizing: border-box; width: 100%; padding: 8px; }
+    .api-provider input[type=number] { width: 85px; padding: 5px; }
+    .api-state { font-size: 12px; line-height: 1.5; color: #43516b; overflow-wrap: anywhere; }
+    .api-remember { display: block; font-size: 12px; margin: 10px 0; }
+    .live-arrivals { padding-left: 16px; max-height: 230px; overflow-y: auto; }
+    .live-arrivals li { margin: 7px 0; }
+</style>
+</head>
+
+<body>
+  <div id="map"></div>
+
+  <aside id="panel" class="collapsed">
+    <div class="panel-header">
+      <div class="panel-heading">
+        <h1>🚍 Transports en temps réel</h1>
+        <button id="togglePanel" type="button" aria-expanded="false" aria-controls="panelBody" title="Afficher les réseaux et les contrôles">Réseaux ▾</button>
+      </div>
+      <div id="testInfo" class="intro">
+        Les véhicules apparaissent automatiquement sur la carte…
+      </div>
+      <div class="route-legend" aria-label="Légende du tracé de course">
+        <span class="route-legend-item"><span class="route-line-sample"></span> parcouru</span>
+        <span class="route-legend-item"><span class="route-line-sample remaining"></span> restant</span>
+      </div>
+    </div>
+
+    <div id="panelBody" class="panel-scroll" hidden>
+      <div class="intro">
+        Chargement automatique du catalogue national transport.data.gouv.fr et des flux publics à clé intégrée.
+        Les véhicules des flux accessibles apparaissent automatiquement sur la carte.
+      </div>
+
+      <div id="status" class="status">Initialisation…</div>
+
+      <div class="intro">
+        Clique sur un véhicule pour afficher sa course, sa progression et ses prochains arrêts.
+      </div>
+
+
+      <div class="controls">
+        <button id="testAll" class="green">Vérifier tous les flux</button>
+        <button id="fitMap" class="gray" disabled>Cadrer les véhicules</button>
+        <button id="stop" disabled title="Disponible pendant une vérification ou l’actualisation d’un flux">Arrêter</button>
+      </div>
+
+      <div class="intro">
+        La recherche et l’actualisation sont automatiques. « Vérifier tous les flux » relance la recherche.
+        Les flux vides, invalides ou bloqués ne sont pas affichés dans la liste.
+      </div>
+
+      <details class="api-settings">
+        <summary>API à clé et budgets de requêtes</summary>
+        <p class="intro">TBM Bordeaux, Azalys Blois et Sankéo Perpignan sont intégrés avec leurs clés publiques. Les API personnelles ci-dessous ajoutent les prochains passages aux arrêts (points violets à partir du zoom 10). Clique sur un arrêt pour consulter ses horaires.</p>
+        <div id="apiProviders"></div>
+        <label class="api-remember"><input id="rememberApiKeys" type="checkbox"> Mémoriser mes clés sur ce navigateur</label>
+        <button id="applyApiKeys" class="green" type="button">Appliquer les clés</button>
+        <button id="forgetApiKeys" class="gray" type="button">Effacer les clés</button>
+        <p class="intro">Les horaires de l’arrêt ouvert s’actualisent automatiquement. Le budget inclut les erreurs et les clics manuels. Les compteurs concernent ce navigateur ; une clé utilisée ailleurs partage le quota de l’opérateur. Une clé dans une page publiée reste accessible aux visiteurs.</p>
+        <p class="intro">Pysae, le GTFS-RT Tisséo et les relais proxy ne sont pas intégrés. Aucun proxy n’est utilisé pour les flux temps réel ; un appel direct bloqué est retiré de l’actualisation automatique.</p>
+      </details>
+      <div id="results"></div>
+    </div>
+
+    <div class="panel-footer">
+      <div id="refresh">0 véhicule — dernière mise à jour : —</div>
+    </div>
+  </aside>
+
+  <div id="atlas-insets" aria-label="Aperçu des territoires ultramarins"></div>
+
+  <div id="territory-nav" aria-label="Accès rapide aux territoires français">
+    <div id="territory-nav-title">France + territoires ultramarins</div>
+    <div id="territory-nav-buttons"></div>
+  </div>
+
+
+<script>
+"use strict";
+
+/* ============================================================
+   CONFIGURATION
+   ============================================================ */
+
+const DATA_GOUV_API = "https://www.data.gouv.fr/api/1/datasets/";
+const TRANSPORT_DATA_API = "https://transport.data.gouv.fr/api/datasets";
+const TRANSPORT_DATA_ORIGIN = "https://transport.data.gouv.fr";
+const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+
+const TEST_TIMEOUT = 10000;
+const STATIC_GTFS_TIMEOUT = 60000;
+const REFRESH_INTERVAL = 30000;
+// Nombre maximal de requêtes simultanées pendant « Vérifier les flux ».
+// Il n'y a volontairement plus de limite sur le nombre TOTAL de flux.
+// Les requêtes sont simplement traitées par petits lots pour ne pas
+// saturer les serveurs des opérateurs.
+const VERIFY_CONCURRENCY = 4;
+
+// Ressources publiques publiées par les producteurs, sans clé personnelle.
+const PUBLIC_NETWORKS = [
+  {
+    "id": "67f5bad303325228295b7dff",
+    "title": "Réseau urbain et scolaire TBM",
+    "organization": {
+      "name": "Bordeaux Métropole"
+    },
+    "resources": [
+      {
+        "title": "GTFS-RT TripUpdates",
+        "format": "gtfs-rt",
+        "url": "https://bdx.mecatran.com/utw/ws/gtfsfeed/realtime/bordeaux?apiKey=opendata-bordeaux-metropole-flux-gtfs-rt"
+      },
+      {
+        "title": "Netex",
+        "format": "NeTEx",
+        "url": "https://bdx.mecatran.com/utw/ws/gtfsfeed/static/bordeaux?apiKey=opendata-bordeaux-metropole-flux-gtfs-rt&type=netex"
+      },
+      {
+        "title": "GTFS-RT VehiclePositions",
+        "format": "gtfs-rt",
+        "url": "https://bdx.mecatran.com/utw/ws/gtfsfeed/vehicles/bordeaux?apiKey=opendata-bordeaux-metropole-flux-gtfs-rt"
+      },
+      {
+        "title": "GTFS-RT Alerts",
+        "format": "gtfs-rt",
+        "url": "https://bdx.mecatran.com/utw/ws/gtfsfeed/alerts/bordeaux?apiKey=opendata-bordeaux-metropole-flux-gtfs-rt"
+      },
+      {
+        "title": "GTFS",
+        "format": "GTFS",
+        "url": "https://bdx.mecatran.com/utw/ws/gtfsfeed/static/bordeaux?apiKey=opendata-bordeaux-metropole-flux-gtfs-rt"
+      }
+    ]
+  },
+  {
+    "id": "5e6193349ce2e72071f4c8c4",
+    "title": "Réseau urbain Azalys",
+    "organization": {
+      "name": "JVMALIN"
+    },
+    "resources": [
+      {
+        "title": "Azalys Blois GTFS-RT avance/retard",
+        "format": "gtfs-rt",
+        "url": "https://app.mecatran.com/utw/ws/gtfsfeed/realtime/blois?apiKey=7a0d1031460836674e76041e7a78011813347f04"
+      },
+      {
+        "title": "Azalys Blois GTFS-RT position véhicules",
+        "format": "gtfs-rt",
+        "url": "https://app.mecatran.com/utw/ws/gtfsfeed/vehicles/blois?apiKey=7a0d1031460836674e76041e7a78011813347f04"
+      },
+      {
+        "title": "Azalys Blois GTFS",
+        "format": "GTFS",
+        "url": "https://fr.ftp.opendatasoft.com/centrevaldeloire/OKINAGTFS/GTFS_AO/BLOIS.zip"
+      }
+    ]
+  },
+  {
+    "id": "615fd9d5bbb0c1c35fe86fe3",
+    "title": "Réseau urbain et scolaire Sankéo",
+    "organization": {
+      "name": "Sankéo"
+    },
+    "resources": [
+      {
+        "title": "Réseau Sankéo - Lignes Régulières Temps Réel",
+        "format": "gtfs-rt",
+        "url": "https://eur.mecatran.com/utw/ws/gtfsfeed/realtime/perpignan?apiKey=612f606b5e3b0a3e6e1f441a2c4a050f6a345b55"
+      },
+      {
+        "title": "Réseau Sankéo - Lignes Régulières",
+        "format": "GTFS",
+        "url": "https://eur.mecatran.com/utw/ws/gtfsfeed/static/perpignan?apiKey=612f606b5e3b0a3e6e1f441a2c4a050f6a345b55"
+      },
+      {
+        "title": "Vehicle Positions Sankéo",
+        "format": "gtfs-rt",
+        "url": "https://eur.mecatran.com/utw/ws/gtfsfeed/vehicles/perpignan?apiKey=612f606b5e3b0a3e6e1f441a2c4a050f6a345b55"
+      }
+    ]
+  }
+];
+const directFailures = new Set();
+const feedRetryAfter = new Map();
+function directRealtimeAllowed(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return !["pysae.com", "api.tisseo.fr", "proxy.transport.data.gouv.fr", "gtfs.bus-tracker.fr"].some(h => host === h || host.endsWith("." + h));
+  } catch { return false; }
+}
+function redactedUrl(url) {
+  try {
+    const u = new URL(url);
+    for (const key of [...u.searchParams.keys()]) if (/key|token|secret|accountkey/i.test(key)) u.searchParams.set(key, "••••");
+    return u.href;
+  } catch { return "Adresse du flux"; }
+}
+
+
+/* ============================================================
+   SCHÉMA GTFS-REALTIME
+   ============================================================ */
+
+const GTFS_PROTO = `
+syntax = "proto2";
+package transit_realtime;
+
+message FeedMessage {
+  required FeedHeader header = 1;
+  repeated FeedEntity entity = 2;
+}
+
+message FeedHeader {
+  required string gtfs_realtime_version = 1;
+  optional Incrementality incrementality = 2 [default = FULL_DATASET];
+  optional uint64 timestamp = 3;
+  optional string feed_version = 4;
+}
+
+enum Incrementality {
+  FULL_DATASET = 0;
+  DIFFERENTIAL = 1;
+}
+
+message FeedEntity {
+  required string id = 1;
+  optional bool is_deleted = 2 [default = false];
+  optional TripUpdate trip_update = 3;
+  optional VehiclePosition vehicle = 4;
+  optional Alert alert = 5;
+}
+
+message VehiclePosition {
+  optional TripDescriptor trip = 1;
+  optional Position position = 2;
+  optional uint32 current_stop_sequence = 3;
+  optional VehicleStopStatus current_status = 4 [default = IN_TRANSIT_TO];
+  optional uint64 timestamp = 5;
+  optional VehicleDescriptor vehicle = 8;
+}
+
+message Position {
+  required float latitude = 1;
+  required float longitude = 2;
+  optional float bearing = 3;
+  optional double odometer = 4;
+  optional float speed = 5;
+}
+
+message TripDescriptor {
+  optional string trip_id = 1;
+  optional string start_time = 2;
+  optional string start_date = 3;
+  optional TripScheduleRelationship schedule_relationship = 4;
+  optional string route_id = 5;
+  optional uint32 direction_id = 6;
+}
+
+enum TripScheduleRelationship {
+  SCHEDULED = 0;
+  ADDED = 1;
+  UNSCHEDULED = 2;
+  CANCELED = 3;
+  REPLACEMENT = 5;
+  DUPLICATED = 6;
+  DELETED = 7;
+  NEW = 8;
+}
+
+enum VehicleStopStatus {
+  INCOMING_AT = 0;
+  STOPPED_AT = 1;
+  IN_TRANSIT_TO = 2;
+}
+
+message VehicleDescriptor {
+  optional string id = 1;
+  optional string label = 2;
+  optional string license_plate = 3;
+}
+
+message TripUpdate {
+  required TripDescriptor trip = 1;
+  repeated StopTimeUpdate stop_time_update = 2;
+  optional uint64 timestamp = 3;
+  optional uint32 delay = 4;
+}
+
+message StopTimeUpdate {
+  required uint32 stop_sequence = 1;
+  optional string stop_id = 4;
+  optional StopTimeEvent arrival = 2;
+  optional StopTimeEvent departure = 3;
+  optional StopTimeUpdateScheduleRelationship schedule_relationship = 5 [default = SCHEDULED];
+}
+
+message StopTimeEvent {
+  optional int32 delay = 1;
+  optional int64 time = 2;
+  optional int32 uncertainty = 3;
+}
+
+enum StopTimeUpdateScheduleRelationship {
+  SCHEDULED = 0;
+  SKIPPED = 1;
+  NO_DATA = 2;
+  UNSCHEDULED = 3;
+}
+
+message Alert {}
+`;
+
+/* ============================================================
+   ÉTAT
+   ============================================================ */
+
+let map;
+let insetMaps = new Map();
+let expandedAtlasZoneId = null;
+let FeedMessage;
+let datasets = [];
+let markers = new Map();
+let refreshTimer = null;
+let stopRequested = false;
+let isVerifying = false;
+let refreshInProgress = false;
+let refreshEpoch = 0;
+const displayedFeeds = new Map();
+const markerKeysByFeed = new Map();
+const datasetByFeedUrl = new Map();
+const enrichmentLoading = new Map();
+const enrichmentAttempted = new Set();
+const STALE_FEED_TIMEOUT = REFRESH_INTERVAL * 3;
+let lastMapBounds = null;
+let lastMapZoneId = "metropole";
+let pendingRouteData = null;
+let selectedVehicleKey = null;
+
+const ROUTE_SOURCE_COMPLETED = "gtfs-route-completed";
+const ROUTE_SOURCE_REMAINING = "gtfs-route-remaining";
+const ROUTE_LAYER_COMPLETED_CASING = "gtfs-route-completed-casing";
+const ROUTE_LAYER_REMAINING_CASING = "gtfs-route-remaining-casing";
+const ROUTE_LAYER_COMPLETED = "gtfs-route-completed-line";
+const ROUTE_LAYER_REMAINING = "gtfs-route-remaining-line";
+
+const FRANCE_MASK_SOURCE = "france-outside-mask";
+const FRANCE_MASK_LAYER = "france-outside-mask-fill";
+const FRANCE_BORDER_SOURCE = "france-visible-territories";
+const FRANCE_BORDER_LAYER = "france-visible-territories-outline";
+const FRANCE_PRECISE_BORDER_SOURCE = "france-precise-department-borders";
+const FRANCE_PRECISE_BORDER_LAYER = "france-precise-department-borders-line";
+const FRANCE_DEPARTMENTS_GEOJSON = "https://geo.api.gouv.fr/departements?format=geojson&geometry=contour";
+const FRANCE_ATLAS_ZONES = [
+  { id: "metropole", label: "Métropole", bounds: [-6.5, 41.0, 10.5, 52.2], center: [2.2, 46.5], zoom: 4.7, radius: 1.0 },
+  { id: "antilles", label: "Antilles", bounds: [-63.4, 14.0, -60.5, 18.5], center: [-61.7, 16.2], zoom: 6.1, radius: 0.30 },
+  { id: "guyane", label: "Guyane", bounds: [-55.2, 1.4, -51.2, 6.2], center: [-53.1, 3.8], zoom: 5.5, radius: 0.35 },
+  { id: "spm", label: "St-Pierre-et-Miquelon", bounds: [-56.7, 46.5, -55.4, 47.4], center: [-56.2, 46.9], zoom: 7.2, radius: 0.12 },
+  { id: "mayotte", label: "Mayotte", bounds: [44.75, -13.25, 45.45, -12.40], center: [45.15, -12.82], zoom: 8.1, radius: 0.09 },
+  { id: "reunion", label: "La Réunion", bounds: [54.95, -21.65, 56.05, -20.65], center: [55.53, -21.13], zoom: 7.6, radius: 0.11 },
+  { id: "nouvelle-caledonie", label: "Nouvelle-Calédonie", bounds: [163.0, -23.5, 168.5, -19.0], center: [165.7, -21.3], zoom: 5.6, radius: 0.38 },
+  { id: "polynesie", label: "Polynésie", bounds: [-154.5, -24.5, -133.0, -7.0], center: [-145.0, -16.5], zoom: 3.6, radius: 1.0 },
+  { id: "wallis-futuna", label: "Wallis-et-Futuna", bounds: [-178.6, -15.0, -175.4, -12.3], center: [-176.8, -13.5], zoom: 6.0, radius: 0.24 }
+];
+
+const FRANCE_MAINLAND_BOUNDS = [[-7.5, 40.5], [11.5, 52.6]];
+const ATLAS_INSET_ZONE_IDS = FRANCE_ATLAS_ZONES
+  .filter(zone => zone.id !== "metropole")
+  .map(zone => zone.id);
+
+function atlasZoneById(zoneId) {
+  return FRANCE_ATLAS_ZONES.find(zone => zone.id === zoneId) || FRANCE_ATLAS_ZONES[0];
+}
+
+function zoneContains(zone, lon, lat) {
+  const [west, south, east, north] = zone.bounds;
+  return lon >= west && lon <= east && lat >= south && lat <= north;
+}
+
+function zoneIdForCoordinate(lon, lat) {
+  for (const zone of FRANCE_ATLAS_ZONES) {
+    if (zone.id === "metropole") continue;
+    if (zoneContains(zone, lon, lat)) return zone.id;
+  }
+  return "metropole";
+}
+
+function mapForZone(zoneId = "metropole") {
+  return zoneId === "metropole" ? map : (insetMaps.get(zoneId) || map);
+}
+
+function allMapInstances() {
+  return [map, ...insetMaps.values()].filter(Boolean);
+}
+
+function markAtlasZoneActive(zoneId = "metropole") {
+  document.querySelectorAll(".atlas-card").forEach(card => {
+    card.classList.toggle("active", card.dataset.zoneId === zoneId);
+  });
+}
+
+function setAtlasInteraction(inset, enabled) {
+  if (!inset) return;
+
+  const toggle = (handler, on) => {
+    if (!handler) return;
+    if (on) handler.enable();
+    else handler.disable();
+  };
+
+  toggle(inset.scrollZoom, enabled);
+  toggle(inset.boxZoom, enabled);
+  toggle(inset.keyboard, enabled);
+  toggle(inset.doubleClickZoom, enabled);
+  toggle(inset.dragPan, enabled);
+  toggle(inset.touchZoomRotate, enabled);
+
+  // On conserve la carte à plat même en mode agrandi.
+  inset.dragRotate?.disable();
+  inset.touchZoomRotate?.disableRotation();
+}
+
+function setAtlasExpanded(zoneId, expanded) {
+  const card = document.querySelector(`.atlas-card[data-zone-id="${zoneId}"]`);
+  const inset = insetMaps.get(zoneId);
+  if (!card || !inset) return;
+
+  // Une seule carte ultramarine peut être agrandie à la fois.
+  if (expanded && expandedAtlasZoneId && expandedAtlasZoneId !== zoneId) {
+    setAtlasExpanded(expandedAtlasZoneId, false);
+  }
+
+  const button = card.querySelector(".atlas-expand-btn");
+  card.classList.toggle("expanded", expanded);
+  document.body.classList.toggle("atlas-expanded", expanded);
+
+  if (expanded) {
+    expandedAtlasZoneId = zoneId;
+    setAtlasInteraction(inset, true);
+    if (button) {
+      button.textContent = "×";
+      button.title = `Réduire ${atlasZoneById(zoneId).label}`;
+      button.setAttribute("aria-label", button.title);
+      button.setAttribute("aria-expanded", "true");
+    }
+  } else {
+    if (expandedAtlasZoneId === zoneId) expandedAtlasZoneId = null;
+    setAtlasInteraction(inset, false);
+    if (button) {
+      button.textContent = "⛶";
+      button.title = `Agrandir ${atlasZoneById(zoneId).label}`;
+      button.setAttribute("aria-label", button.title);
+      button.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  // MapLibre doit recalculer son canevas après le changement de taille CSS.
+  requestAnimationFrame(() => {
+    inset.resize();
+    requestAnimationFrame(() => inset.resize());
+  });
+}
+
+function initAtlasInsets() {
+  const container = $("atlas-insets");
+  if (!container) return;
+
+  container.innerHTML = "";
+  insetMaps.clear();
+
+  for (const zoneId of ATLAS_INSET_ZONE_IDS) {
+    const zone = atlasZoneById(zoneId);
+    const card = document.createElement("section");
+    card.className = "atlas-card";
+    card.dataset.zoneId = zone.id;
+
+    const title = document.createElement("div");
+    title.className = "atlas-card-title";
+
+    const titleText = document.createElement("span");
+    titleText.className = "atlas-title-text";
+    titleText.textContent = zone.label;
+
+    const expandButton = document.createElement("button");
+    expandButton.type = "button";
+    expandButton.className = "atlas-expand-btn";
+    expandButton.textContent = "⛶";
+    expandButton.title = `Agrandir ${zone.label}`;
+    expandButton.setAttribute("aria-label", expandButton.title);
+    expandButton.setAttribute("aria-expanded", "false");
+
+    title.appendChild(titleText);
+    title.appendChild(expandButton);
+
+    const mapEl = document.createElement("div");
+    mapEl.className = "atlas-map";
+    mapEl.id = `atlas-map-${zone.id}`;
+
+    card.appendChild(title);
+    card.appendChild(mapEl);
+    container.appendChild(card);
+
+    const inset = new maplibregl.Map({
+      container: mapEl,
+      style: MAP_STYLE,
+      center: zone.center,
+      zoom: zone.zoom,
+      minZoom: Math.max(0.8, zone.zoom - 1.2),
+      maxZoom: 16,
+      maxBounds: [[zone.bounds[0], zone.bounds[1]], [zone.bounds[2], zone.bounds[3]]],
+      renderWorldCopies: false,
+      dragRotate: false,
+      pitchWithRotate: false,
+      touchPitch: false,
+      attributionControl: false
+    });
+
+    inset.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    setAtlasInteraction(inset, false);
+
+    inset.on("load", () => {
+      if (pendingRouteData && pendingRouteData.zoneId === zone.id) {
+        const data = pendingRouteData;
+        pendingRouteData = null;
+        drawRouteLayers(data.completed, data.remaining, data.zoneId);
+      }
+    });
+
+    expandButton.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      setAtlasExpanded(zone.id, expandedAtlasZoneId !== zone.id);
+    });
+
+    card.addEventListener("click", event => {
+      if (
+        event.target.closest(".vehicle") ||
+        event.target.closest(".stop-marker") ||
+        event.target.closest(".atlas-expand-btn")
+      ) return;
+
+      markAtlasZoneActive(zone.id);
+
+      // En miniature, un clic recadre l'encart. En grand, il laisse
+      // l'utilisateur naviguer librement dans le territoire.
+      if (!card.classList.contains("expanded")) {
+        inset.fitBounds([[zone.bounds[0], zone.bounds[1]], [zone.bounds[2], zone.bounds[3]]], {
+          padding: 10,
+          duration: 500,
+          maxZoom: zone.zoom + 0.8
+        });
+      }
+    });
+
+    insetMaps.set(zone.id, inset);
+  }
+}
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && expandedAtlasZoneId) {
+    setAtlasExpanded(expandedAtlasZoneId, false);
+  }
+});
+
+function roundedRectRing(bounds, radius = 0.2, steps = 5) {
+  const [west, south, east, north] = bounds;
+  const r = Math.max(0, Math.min(radius, (east - west) / 2, (north - south) / 2));
+  const points = [];
+
+  const arc = (cx, cy, startDeg, endDeg) => {
+    for (let i = 0; i <= steps; i++) {
+      const a = (startDeg + (endDeg - startDeg) * i / steps) * Math.PI / 180;
+      points.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+    }
+  };
+
+  // Sens horaire : pratique pour utiliser ces anneaux comme trous du masque.
+  points.push([west + r, north]);
+  points.push([east - r, north]);
+  arc(east - r, north - r, 90, 0);
+  points.push([east, south + r]);
+  arc(east - r, south + r, 0, -90);
+  points.push([west + r, south]);
+  arc(west + r, south + r, -90, -180);
+  points.push([west, north - r]);
+  arc(west + r, north - r, 180, 90);
+
+  if (points.length && (points[0][0] !== points.at(-1)[0] || points[0][1] !== points.at(-1)[1])) {
+    points.push(points[0]);
+  }
+  return points;
+}
+
+function buildFranceVisibleGeoJson() {
+  return {
+    type: "FeatureCollection",
+    features: FRANCE_ATLAS_ZONES.map(zone => ({
+      type: "Feature",
+      properties: { id: zone.id, label: zone.label },
+      geometry: { type: "Polygon", coordinates: [roundedRectRing(zone.bounds, zone.radius)] }
+    }))
+  };
+}
+
+function buildFranceOutsideMaskGeoJson() {
+  const world = [
+    [-179.95, -59.5],
+    [179.95, -59.5],
+    [179.95, 72.5],
+    [-179.95, 72.5],
+    [-179.95, -59.5]
+  ];
+
+  return {
+    type: "FeatureCollection",
+    features: [{
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          world,
+          ...FRANCE_ATLAS_ZONES.map(zone => roundedRectRing(zone.bounds, zone.radius))
+        ]
+      }
+    }]
+  };
+}
+
+const FRANCE_VISIBLE_GEOJSON = buildFranceVisibleGeoJson();
+const FRANCE_OUTSIDE_MASK_GEOJSON = buildFranceOutsideMaskGeoJson();
+
+/*
+ * Cache :
+ * URL -> résultat de vérification.
+ */
+const verification = new Map();
+
+/*
+ * Données GTFS statiques associées au jeu de données :
+ * routes, trips, stops et stop_times.
+ */
+const staticFeedCache = new Map();
+const staticLoading = new Map();
+const staticLoadState = new Map();
+const panDatasetCache = new Map();
+
+/* ============================================================
+   OUTILS
+   ============================================================ */
+
+const $ = id => document.getElementById(id);
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function feedEntities(feed) {
+  return Array.isArray(feed?.entity) ? feed.entity : [];
+}
+
+function positionedVehicles(feed) {
+  return feedEntities(feed).filter(entity => {
+    const vehicle = entity?.vehicle;
+    const position = vehicle?.position;
+
+    return position &&
+      Number.isFinite(Number(position.latitude)) &&
+      Number.isFinite(Number(position.longitude));
+  });
+}
+
+function countVehicles(feed) {
+  return positionedVehicles(feed).length;
+}
+
+function countEntities(feed) {
+  return feedEntities(feed).length;
+}
+
+function status(message, type = "") {
+  const el = $("status");
+  el.textContent = message;
+  el.className = "status" + (type ? " " + type : "");
+}
+
+function clearRouteLayers() {
+  pendingRouteData = null;
+
+  for (const targetMap of allMapInstances()) {
+    if (!targetMap || !targetMap.getStyle()) continue;
+
+    for (const layerId of [
+      ROUTE_LAYER_COMPLETED,
+      ROUTE_LAYER_COMPLETED_CASING,
+      ROUTE_LAYER_REMAINING,
+      ROUTE_LAYER_REMAINING_CASING
+    ]) {
+      if (targetMap.getLayer(layerId)) targetMap.removeLayer(layerId);
+    }
+
+    for (const sourceId of [ROUTE_SOURCE_COMPLETED, ROUTE_SOURCE_REMAINING]) {
+      if (targetMap.getSource(sourceId)) targetMap.removeSource(sourceId);
+    }
+  }
+}
+
+function clearMarkers() {
+  for (const marker of markers.values()) marker.remove();
+  markers.clear();
+  markerKeysByFeed.clear();
+  clearRouteLayers();
+  lastMapBounds = null;
+  const fitButton = $("fitMap");
+  if (fitButton) fitButton.disabled = true;
+}
+
+function clearCourseDetails() {
+  for (const [key, marker] of [...markers.entries()]) {
+    if (!key.startsWith("course-stop-")) continue;
+    marker.remove();
+    markers.delete(key);
+  }
+  clearRouteLayers();
+}
+
+function resourcesOf(dataset) {
+  if (Array.isArray(dataset.resources)) return dataset.resources;
+  if (Array.isArray(dataset.distributions)) return dataset.distributions;
+  return [];
+}
+
+function resourceUrl(resource) {
+  return resource.download_url ||
+         resource.url ||
+         resource.latest ||
+         resource.href ||
+         null;
+}
+
+function looksLikeGtfsRt(resource) {
+  const text = [
+    resource.title,
+    resource.description,
+    resource.format,
+    resource.type,
+    resource.mime,
+    resource.mimetype,
+    resource.content_type,
+    resource.url?.split("?")[0],
+    resource.download_url?.split("?")[0]
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  return /gtfs[\s_-]*rt|gtfs[\s_-]*realtime|protobuf|vehicle[-_ ]positions?|trip[-_ ]updates?|alerts.*gtfs/.test(text);
+}
+
+function gtfsResources(dataset) {
+  return resourcesOf(dataset)
+    .filter(looksLikeGtfsRt)
+    .map(resource => ({
+      resource,
+      url: resourceUrl(resource),
+      kind: resourceKind(resource)
+    }))
+    // Les ServiceAlerts ne sont pas utilisés par cette application :
+    // ils ne sont ni affichés ni vérifiés.
+    .filter(x => x.url && x.kind !== "alert" && directRealtimeAllowed(x.url));
+}
+
+function resourceKind(resource) {
+  const text = [
+    resource.title, resource.description, resource.format,
+    resource.type, resource.mime, resource.mimetype,
+    resource.content_type, resource.url, resource.download_url
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  if (/vehicle[\s_-]*position|gtfsfeed\/vehicles\/|position.*v[eé]hicule/.test(text)) {
+    return "vehicle";
+  }
+  if (/trip[\s_-]*update|gtfsfeed\/realtime\/|avance.*retard/.test(text)) {
+    return "trip";
+  }
+  if (/alert|service[\s_-]*alert/.test(text)) {
+    return "alert";
+  }
+  return "realtime";
+}
+
+function realtimeResourceRole(kind) {
+  if (kind === "vehicle") {
+    return "Positions des véhicules — source cartographique principale";
+  }
+  if (kind === "trip") {
+    return "Courses / horaires temps réel (TripUpdates) — utilisé automatiquement avec les positions";
+  }
+  return "Flux GTFS-RT combiné — positions et/ou informations de course";
+}
+
+function vehicleResourceForDataset(dataset) {
+  const resources = gtfsResources(dataset);
+  return resources.find(x => x.kind === "vehicle" && verification.get(x.url)?.ok) ||
+         resources.find(x => x.kind === "vehicle") ||
+         resources.find(x => x.kind === "realtime" && verification.get(x.url)?.vehicleCount > 0) ||
+         resources.find(x => x.kind === "realtime");
+}
+
+function looksLikeStaticGtfs(resource) {
+  const text = [
+    resource.title, resource.description, resource.format,
+    resource.type, resource.mime, resource.mimetype,
+    resource.content_type, resource.url, resource.download_url
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  const isZip = /\.zip(?:$|[?#]|\s)/.test(text);
+  const mentionsGtfs = /gtfs/.test(text);
+  const isRealtime = /gtfs[\s_-]*(rt|realtime)|vehicle[\s_-]*position|trip[\s_-]*update/.test(text);
+
+  const explicitlyStatic = /gtfs[\s_-]*(statique|static|standard)/.test(text) ||
+    /gtfs.*(?:version|en[ _-]*cours|a[ _-]*venir|current|schedule|horaire)/.test(normalizedSearchText(text));
+
+  return mentionsGtfs && !isRealtime && (isZip || explicitlyStatic);
+}
+
+function resourceDateTimestamp(resource) {
+  if (!resource) return 0;
+
+  const candidates = [
+    resource.last_modified,
+    resource.harvest?.modified_at,
+    resource.internal?.last_modified_internal,
+    resource.updated_at,
+    resource.updated,
+    resource.created_at,
+    resource.harvest?.created_at,
+    resource.internal?.created_at_internal,
+    resource.created
+  ];
+
+  for (const value of candidates) {
+    if (!value) continue;
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+
+  return 0;
+}
+
+function normalizedSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function staticCandidatePriority(resource, url = "") {
+  const text = normalizedSearchText([
+    resource?.title,
+    resource?.description,
+    resource?.format,
+    resource?.type,
+    resource?.status,
+    resource?.url,
+    resource?.download_url,
+    url
+  ].filter(Boolean).join(" "));
+
+  // Une version explicitement « en cours/current » doit passer avant une
+  // version « à venir », même si cette dernière possède un timestamp plus récent.
+  if (/\ben[ _-]*cours\b|\bcurrent\b|\bactuel(?:le)?\b|\bcourant(?:e)?\b/.test(text)) return 30;
+  if (/\ba[ _-]*venir\b|\bfutur(?:e)?\b|\bupcoming\b/.test(text)) return 5;
+  return 20;
+}
+
+function descriptionStaticResources(dataset) {
+  const text = [dataset?.description, dataset?.notes].filter(Boolean).join(" ");
+  const urls = text.match(/https?:\/\/[^\s<>"']+?\.zip(?:\?[^\s<>"']*)?/gi) || [];
+
+  return urls
+    .map(url => url.replace(/[),.;]+$/, ""))
+    .filter(url => /gtfs/i.test(url) && !/netex|gtfs[-_ ]?rt/i.test(url))
+    .map((url, index) => ({
+      resource: {
+        title: decodeURIComponent(url.split("/").pop() || "GTFS statique"),
+        url,
+        description: "URL GTFS détectée dans la description du jeu de données"
+      },
+      url,
+      timestamp: 0,
+      originalIndex: 10000 + index,
+      source: "description"
+    }));
+}
+
+function knownPanDatasetInternalId(dataset) {
+  const text = normalizedSearchText([
+    dataset?.id,
+    dataset?.slug,
+    dataset?.title,
+    dataset?.description,
+    ...resourcesOf(dataset).flatMap(resource => [
+      resource?.title,
+      resource?.url,
+      resource?.download_url
+    ])
+  ].filter(Boolean).join(" "));
+
+  // Dataset interne PAN du réseau STAR Rennes Métropole.
+  // Son historique contient les copies quotidiennes du GTFS en cours.
+  if (
+    dataset?.id === "580defb1a3a7292dcfa9d33f" ||
+    text.includes("star-rennes-integration") ||
+    text.includes("reseau star dans les formats gtfs") ||
+    text.includes("versions des horaires theoriques des lignes de bus et de metro du reseau star")
+  ) {
+    return 507;
+  }
+
+  return null;
+}
+
+function knownPanStaticFallbacks(dataset) {
+  const text = normalizedSearchText([
+    dataset?.id,
+    dataset?.slug,
+    dataset?.title,
+    dataset?.description,
+    ...resourcesOf(dataset).flatMap(resource => [
+      resource?.title,
+      resource?.url,
+      resource?.download_url
+    ])
+  ].filter(Boolean).join(" "));
+
+  const output = [];
+
+  /*
+   * Cas Zenbus / Paris-Saclay : le fichier source Zenbus est bien référencé
+   * sur data.gouv.fr mais son téléchargement direct peut être bloqué par CORS
+   * dans un navigateur. Le PAN conserve une copie historisée permanente.
+   */
+  const isParisSaclay =
+    text.includes("navettes paris saclay") ||
+    text.includes("navettes paris-saclay") ||
+    (text.includes("paris saclay") && text.includes("gtfs-rt"));
+
+  if (isParisSaclay) {
+    output.push(
+      {
+        resource: {
+          title: "Horaires théorique des navettes Paris-Saclay (GTFS)",
+          format: "GTFS",
+          last_modified: "2026-01-15T18:17:07Z",
+          description: "Copie historisée permanente conservée par le PAN"
+        },
+        url: "https://transport-data-gouv-fr-resource-history-prod.cellar-c2.services.clever-cloud.com/14826/14826.20260115.181707.857904.zip",
+        timestamp: Date.parse("2026-01-15T18:17:07Z"),
+        originalIndex: 90000,
+        source: "pan-archive"
+      },
+      {
+        resource: {
+          title: "Horaires théorique des navettes Paris-Saclay (GTFS) — ressource PAN",
+          format: "GTFS",
+          description: "Ressource interne du Point d'Accès National"
+        },
+        url: "https://transport.data.gouv.fr/resources/14826/download",
+        timestamp: Date.parse("2026-01-15T18:17:07Z"),
+        originalIndex: 90001,
+        source: "pan-resource"
+      }
+    );
+  }
+
+  /*
+   * STAR Rennes : l'URL Opendatasoft officielle peut être bloquée par CORS
+   * depuis un fichier HTML local. Le PAN associe le GTFS courant aux flux
+   * GTFS-RT STAR et référence cette ressource sous l'identifiant 83281.
+   * L'historique du dataset interne 507 est interrogé juste après pour obtenir
+   * la copie quotidienne la plus récente.
+   */
+  const isStarRennes =
+    dataset?.id === "580defb1a3a7292dcfa9d33f" ||
+    text.includes("star-rennes-integration") ||
+    text.includes("versions des horaires theoriques des lignes de bus et de metro du reseau star");
+
+  if (isStarRennes) {
+    output.push({
+      resource: {
+        title: "GTFS STAR Rennes (Version en cours) — ressource PAN",
+        format: "GTFS",
+        description: "Ressource GTFS courante associée par le PAN aux flux GTFS-RT STAR"
+      },
+      url: "https://transport.data.gouv.fr/resources/83281/download",
+      timestamp: Date.now(),
+      originalIndex: 91000,
+      source: "pan-resource"
+    });
+  }
+
+  return output;
+}
+
+function staticResources(dataset) {
+  const fromResources = resourcesOf(dataset)
+    .filter(looksLikeStaticGtfs)
+    .map((resource, originalIndex) => ({
+      resource,
+      url: resourceUrl(resource),
+      timestamp: resourceDateTimestamp(resource),
+      originalIndex,
+      source: "resource"
+    }))
+    .filter(x => x.url);
+
+  const merged = [...fromResources, ...descriptionStaticResources(dataset)];
+  const byUrl = new Map();
+
+  for (const candidate of merged) {
+    const key = candidate.url.replace(/^http:/i, "https:");
+    const previous = byUrl.get(key);
+    if (!previous || candidate.timestamp > previous.timestamp || candidate.source === "resource") {
+      byUrl.set(key, candidate);
+    }
+  }
+
+  return [...byUrl.values()].sort((a, b) => {
+    const priorityDiff = staticCandidatePriority(b.resource, b.url) - staticCandidatePriority(a.resource, a.url);
+    return priorityDiff || (b.timestamp - a.timestamp) || (a.originalIndex - b.originalIndex);
+  });
+}
+
+
+
+function panObjectTimestamp(obj) {
+  if (!obj || typeof obj !== "object") return 0;
+  const candidates = [
+    obj.download_datetime,
+    obj.inserted_at,
+    obj.updated_at,
+    obj.last_up_to_date_at,
+    obj.last_modified,
+    obj.created_at,
+    obj.date,
+    obj.publication_date
+  ];
+  for (const value of candidates) {
+    const ts = Date.parse(value || "");
+    if (Number.isFinite(ts)) return ts;
+  }
+  return 0;
+}
+
+function collectPanArchiveCandidates(value, output = []) {
+  if (!value || typeof value !== "object") return output;
+
+  if (!Array.isArray(value)) {
+    const filename = String(value.filename || "");
+    const constructedHistoryUrl =
+      /^\d+\/[^/]+\.zip(?:$|[?#])/i.test(filename)
+        ? `https://transport-data-gouv-fr-resource-history-prod.cellar-c2.services.clever-cloud.com/${filename}`
+        : null;
+
+    const url = value.permanent_url || value.permanentUrl || constructedHistoryUrl || null;
+    const format = normalizedSearchText(value.format || value.type || value.mime || "");
+    const title = value.title || value.name || value.filename || "GTFS statique historisé";
+    const titleText = normalizedSearchText(title);
+    const combinedText = normalizedSearchText([
+      title,
+      format,
+      value.resource_url,
+      value.resource_latest_url,
+      value.url
+    ].filter(Boolean).join(" "));
+
+    if (url && /\.zip(?:$|[?#])/i.test(url) &&
+        !combinedText.includes("netex") &&
+        !/gtfs[ _-]*(rt|realtime)/.test(combinedText) &&
+        (format.includes("gtfs") || combinedText.includes("gtfs"))) {
+      output.push({
+        resource: {
+          ...value,
+          title,
+          url,
+          last_modified: value.download_datetime || value.updated_at || value.inserted_at || value.last_modified || null
+        },
+        url,
+        timestamp: panObjectTimestamp(value),
+        originalIndex: 50000 + output.length,
+        source: "pan-archive"
+      });
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectPanArchiveCandidates(item, output);
+  } else {
+    for (const child of Object.values(value)) {
+      if (child && typeof child === "object") collectPanArchiveCandidates(child, output);
+    }
+  }
+  return output;
+}
+
+function panInternalDatasetId(detail, dataset = null) {
+  const values = [
+    detail?.transport_dataset_id,
+    detail?.internal_id,
+    detail?.id,
+    detail?.dataset_id,
+    detail?.dataset?.transport_dataset_id,
+    detail?.dataset?.internal_id,
+    detail?.dataset?.id,
+    detail?.dataset?.dataset_id,
+    detail?.metadata?.dataset_id
+  ];
+  for (const value of values) {
+    if (Number.isInteger(value) && value > 0) return value;
+    if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  }
+
+  return knownPanDatasetInternalId(dataset);
+}
+
+function historyCsvCandidates(text) {
+  const rows = parseCsv(text);
+  const output = [];
+
+  for (const row of rows) {
+    const values = Object.values(row || {}).filter(Boolean).map(String);
+    const historyUrl = values.find(v =>
+      /transport-data-gouv-fr-resource-history/i.test(v) && /\.zip(?:$|[?#])/i.test(v)
+    );
+    const permanentUrl = row.permanent_url || row.permanentUrl || historyUrl || null;
+    if (!permanentUrl) continue;
+
+    const format = row.format || row.type || row.mime || "";
+    const title = row.title || row.name || row.filename || row.resource_title || "GTFS statique historisé";
+    const allText = normalizedSearchText([title, format, ...values].join(" "));
+    if (!allText.includes("gtfs") || /gtfs[ _-]*rt/.test(allText) || !/\.zip(?:$|[?#])/i.test(permanentUrl)) continue;
+
+    output.push({
+      resource: {
+        ...row,
+        title,
+        format: format || "GTFS",
+        url: permanentUrl,
+        last_modified: row.download_datetime || row.publication_date || row.date || row.inserted_at || row.updated_at || null
+      },
+      url: permanentUrl,
+      timestamp: panObjectTimestamp(row),
+      originalIndex: 60000 + output.length,
+      source: "pan-archive"
+    });
+  }
+  return output;
+}
+
+async function fetchTextWithTimeout(url, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: { "Accept": "text/csv,text/plain,application/json,*/*" }
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function panArchiveStaticResources(dataset) {
+  const datasetId = dataset?.id;
+  if (!datasetId) return [];
+  if (panDatasetCache.has(datasetId)) return panDatasetCache.get(datasetId);
+
+  const promise = (async () => {
+    const found = [...knownPanStaticFallbacks(dataset)];
+    let detail = null;
+
+    try {
+      const text = await fetchTextWithTimeout(`${TRANSPORT_DATA_API}/${encodeURIComponent(datasetId)}`, 20000);
+      detail = JSON.parse(text);
+      collectPanArchiveCandidates(detail, found);
+    } catch (error) {
+      console.warn("API PAN indisponible pour le GTFS statique :", error);
+    }
+
+    // Le détail de dataset ne contient pas toujours l'historique complet.
+    // Quand l'identifiant interne PAN est disponible, le CSV d'historique
+    // donne les URL permanentes des copies de GTFS archivées côté PAN.
+    const internalId = panInternalDatasetId(detail, dataset);
+    if (internalId) {
+      try {
+        const csv = await fetchTextWithTimeout(
+          `${TRANSPORT_DATA_ORIGIN}/datasets/${encodeURIComponent(internalId)}/resources_history_csv`,
+          25000
+        );
+        found.push(...historyCsvCandidates(csv));
+      } catch (error) {
+        console.warn("Historique CSV PAN indisponible :", error);
+      }
+    }
+
+    const byUrl = new Map();
+    for (const candidate of found) {
+      if (!candidate?.url) continue;
+      const key = candidate.url.replace(/^http:/i, "https:");
+      const previous = byUrl.get(key);
+      if (!previous ||
+          staticCandidatePriority(candidate.resource, candidate.url) > staticCandidatePriority(previous.resource, previous.url) ||
+          candidate.timestamp > previous.timestamp) {
+        byUrl.set(key, candidate);
+      }
+    }
+
+    return [...byUrl.values()].sort((a, b) => {
+      const priorityDiff = staticCandidatePriority(b.resource, b.url) - staticCandidatePriority(a.resource, a.url);
+      return priorityDiff || (b.timestamp - a.timestamp) || (a.originalIndex - b.originalIndex);
+    });
+  })();
+
+  panDatasetCache.set(datasetId, promise);
+  return promise;
+}
+
+/* ============================================================
+   CARTE
+   ============================================================ */
+
+function addFranceTerritoryMask() {
+  if (!map || !map.isStyleLoaded()) return;
+
+  if (!map.getSource(FRANCE_MASK_SOURCE)) {
+    map.addSource(FRANCE_MASK_SOURCE, {
+      type: "geojson",
+      data: FRANCE_OUTSIDE_MASK_GEOJSON
+    });
+  }
+
+  if (!map.getLayer(FRANCE_MASK_LAYER)) {
+    map.addLayer({
+      id: FRANCE_MASK_LAYER,
+      type: "fill",
+      source: FRANCE_MASK_SOURCE,
+      paint: {
+        "fill-color": "#ffffff",
+        "fill-opacity": 1
+      }
+    });
+  }
+
+  if (!map.getSource(FRANCE_BORDER_SOURCE)) {
+    map.addSource(FRANCE_BORDER_SOURCE, {
+      type: "geojson",
+      data: FRANCE_VISIBLE_GEOJSON
+    });
+  }
+
+  if (!map.getLayer(FRANCE_BORDER_LAYER)) {
+    map.addLayer({
+      id: FRANCE_BORDER_LAYER,
+      type: "line",
+      source: FRANCE_BORDER_SOURCE,
+      layout: {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      paint: {
+        "line-color": "#76818b",
+        "line-width": 1.15,
+        "line-opacity": 0.70
+      }
+    });
+  }
+}
+
+
+
+
+
+async function loadPreciseFranceBorders() {
+  if (!map || !map.isStyleLoaded()) return;
+
+  try {
+    const response = await fetch(FRANCE_DEPARTMENTS_GEOJSON, {
+      mode: "cors",
+      credentials: "omit",
+      cache: "force-cache",
+      headers: { "Accept": "application/geo+json, application/json" }
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    if (!data || data.type !== "FeatureCollection") {
+      throw new Error("GeoJSON inattendu");
+    }
+
+    if (!map.getSource(FRANCE_PRECISE_BORDER_SOURCE)) {
+      map.addSource(FRANCE_PRECISE_BORDER_SOURCE, { type: "geojson", data });
+    } else {
+      map.getSource(FRANCE_PRECISE_BORDER_SOURCE).setData(data);
+    }
+
+    if (!map.getLayer(FRANCE_PRECISE_BORDER_LAYER)) {
+      map.addLayer({
+        id: FRANCE_PRECISE_BORDER_LAYER,
+        type: "line",
+        source: FRANCE_PRECISE_BORDER_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#52616d",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 3, 0.8, 8, 1.5],
+          "line-opacity": 0.88
+        }
+      });
+    }
+  } catch (error) {
+    // Le masque généreux reste utilisable même si l'API de contours est indisponible.
+    console.warn("Contours administratifs précis non chargés :", error);
+  }
+}
+
+function initTerritoryNavigator() {
+  // Ancien navigateur textuel remplacé par les mini-cartes ultramarines.
+}
+
+function updateMapLegalLayout() {
+  const attribution = document.querySelector("#map .maplibregl-ctrl-attrib");
+  if (!attribution) return;
+  // Réserver la hauteur réelle, y compris quand les crédits passent sur plusieurs lignes.
+  const height = Math.ceil(attribution.getBoundingClientRect().height) + 6;
+  document.documentElement.style.setProperty("--map-legal-height", `${height}px`);
+}
+
+function initMap() {
+  map = new maplibregl.Map({
+    container: "map",
+    style: MAP_STYLE,
+    center: [2.2, 46.5],
+    zoom: 5.2,
+    minZoom: 4.2,
+    maxZoom: 18,
+    maxBounds: FRANCE_MAINLAND_BOUNDS,
+    renderWorldCopies: false,
+    attributionControl: false,
+    dragRotate: false,
+    pitchWithRotate: false,
+    touchPitch: false
+  });
+
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  // Un seul bloc : crédit du fournisseur et mentions fournies par les sources de la carte.
+  map.addControl(new maplibregl.AttributionControl({
+    compact: false,
+    customAttribution: '<a href="https://openfreemap.org/" target="_blank" rel="noopener noreferrer">OpenFreeMap</a>'
+  }), "bottom-right");
+  const attribution = document.querySelector("#map .maplibregl-ctrl-attrib");
+  if (attribution && typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(updateMapLegalLayout).observe(attribution);
+  }
+  window.addEventListener("resize", updateMapLegalLayout);
+  updateMapLegalLayout();
+  initAtlasInsets();
+  initTerritoryNavigator();
+
+  map.on("load", () => {
+    updateMapLegalLayout();
+    addFranceTerritoryMask();
+    loadPreciseFranceBorders();
+
+    if (pendingRouteData && pendingRouteData.zoneId === "metropole") {
+      const data = pendingRouteData;
+      pendingRouteData = null;
+      drawRouteLayers(data.completed, data.remaining, data.zoneId);
+    }
+  });
+}
+
+
+/* ============================================================
+   DÉCODEUR
+   ============================================================ */
+
+function initDecoder() {
+  if (!window.protobuf) {
+    throw new Error("protobuf.js n'a pas été chargé.");
+  }
+
+  const parsed = protobuf.parse(GTFS_PROTO);
+  FeedMessage = parsed.root.lookupType("transit_realtime.FeedMessage");
+
+  if (!FeedMessage) {
+    throw new Error("Le type GTFS-RT FeedMessage est introuvable.");
+  }
+}
+
+function decodeProtobuf(buffer) {
+  const feed = FeedMessage.decode(new Uint8Array(buffer));
+
+  if (!feed.header) {
+    throw new Error("Header GTFS-RT absent.");
+  }
+
+  const version = String(feed.header.gtfsRealtimeVersion || "");
+
+  if (!version) {
+    throw new Error("Version GTFS-RT absente.");
+  }
+
+  if (!/^\d+\.\d+$/.test(version)) {
+    throw new Error("Version GTFS-RT invalide : " + version);
+  }
+
+  return {
+    format: "protobuf",
+    feed,
+    version
+  };
+}
+
+function decodeJson(text) {
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("La réponse n'est ni un protobuf GTFS-RT ni un JSON valide.");
+  }
+
+  /*
+   * Certains producteurs exposent une représentation JSON d'un
+   * FeedMessage. Elle est acceptée uniquement si elle ressemble
+   * réellement à un flux GTFS-RT.
+   */
+  if (!data || !data.header || !Array.isArray(data.entity)) {
+    throw new Error("JSON accessible mais ce n'est pas un FeedMessage GTFS-RT.");
+  }
+
+  if (!data.header.gtfsRealtimeVersion) {
+    throw new Error("JSON GTFS-RT : version absente.");
+  }
+
+  return {
+    format: "json",
+    feed: data,
+    version: String(data.header.gtfsRealtimeVersion)
+  };
+}
+
+/* ============================================================
+   GTFS STATIQUE
+   ============================================================ */
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') {
+        quoted = false;
+      } else {
+        field += c;
+      }
+      continue;
+    }
+
+    if (c === '"') {
+      quoted = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n") {
+      row.push(field.replace(/\r$/, ""));
+      field = "";
+      if (row.some(v => v !== "")) rows.push(row);
+      row = [];
+    } else {
+      field += c;
+    }
+  }
+
+  if (field.length || row.length) {
+    row.push(field);
+    if (row.some(v => v !== "")) rows.push(row);
+  }
+
+  if (!rows.length) return [];
+
+  const headers = rows[0].map(h => h.trim());
+  return rows.slice(1).map(values => {
+    const obj = {};
+    headers.forEach((h, i) => obj[h] = (values[i] ?? "").trim());
+    return obj;
+  });
+}
+
+function findZipFile(zip, filename) {
+  const wanted = filename.toLowerCase();
+  const key = Object.keys(zip.files).find(name =>
+    name.toLowerCase().endsWith("/" + wanted) ||
+    name.toLowerCase() === wanted
+  );
+  return key ? zip.files[key] : null;
+}
+
+async function readZipCsv(zip, filename, required = false) {
+  const file = findZipFile(zip, filename);
+
+  if (!file) {
+    if (required) throw new Error(`GTFS statique : ${filename} absent.`);
+    return [];
+  }
+
+  const text = await file.async("text");
+  return parseCsv(text);
+}
+
+function datasetCacheKey(dataset) {
+  return dataset?.id || dataset?.slug || dataset?.title || "dataset-inconnu";
+}
+
+function formatResourceDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("fr-FR");
+}
+
+async function parseStaticGtfsCandidate(candidate, candidateCount) {
+  const title = candidate.resource?.title || candidate.resource?.format || "GTFS statique";
+  const response = await fetchWithTimeout(candidate.url, STATIC_GTFS_TIMEOUT);
+  const zip = await JSZip.loadAsync(response.buffer);
+
+  const [routes, trips, stops, stopTimes, shapes] = await Promise.all([
+    readZipCsv(zip, "routes.txt", true),
+    readZipCsv(zip, "trips.txt", true),
+    readZipCsv(zip, "stops.txt", true),
+    readZipCsv(zip, "stop_times.txt", true),
+    readZipCsv(zip, "shapes.txt", false)
+  ]);
+
+  const routeById = new Map();
+  for (const r of routes) routeById.set(r.route_id, r);
+
+  const tripById = new Map();
+  for (const t of trips) tripById.set(t.trip_id, t);
+
+  const stopById = new Map();
+  for (const st of stops) stopById.set(st.stop_id, st);
+
+  const stopTimesByTrip = new Map();
+  for (const st of stopTimes) {
+    if (!st.trip_id) continue;
+    if (!stopTimesByTrip.has(st.trip_id)) stopTimesByTrip.set(st.trip_id, []);
+    stopTimesByTrip.get(st.trip_id).push(st);
+  }
+  for (const arr of stopTimesByTrip.values()) {
+    arr.sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0));
+  }
+
+  const shapeById = new Map();
+  for (const point of shapes) {
+    if (!point.shape_id) continue;
+    const lat = Number(point.shape_pt_lat);
+    const lon = Number(point.shape_pt_lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    if (!shapeById.has(point.shape_id)) shapeById.set(point.shape_id, []);
+    shapeById.get(point.shape_id).push({
+      lat,
+      lon,
+      sequence: Number(point.shape_pt_sequence || 0),
+      distanceTraveled: Number(point.shape_dist_traveled)
+    });
+  }
+  for (const arr of shapeById.values()) arr.sort((a, b) => a.sequence - b.sequence);
+
+  return {
+    routeById,
+    tripById,
+    stopById,
+    stopTimesByTrip,
+    shapeById,
+    sourceUrl: candidate.url,
+    sourceTitle: title,
+    sourceKind: candidate.source || "resource",
+    sourceLastModified: candidate.resource?.last_modified || candidate.resource?.download_datetime || candidate.resource?.harvest?.modified_at || candidate.resource?.created_at || null,
+    candidateCount
+  };
+}
+
+async function loadStaticGtfs(dataset) {
+  const key = datasetCacheKey(dataset);
+
+  if (staticFeedCache.has(key)) return staticFeedCache.get(key);
+  if (staticLoading.has(key)) return staticLoading.get(key);
+
+  const directCandidates = staticResources(dataset);
+
+  if (!directCandidates.length) {
+    staticLoadState.set(key, { status: "missing" });
+    throw new Error("Aucun fichier GTFS statique (.zip) associé trouvé.");
+  }
+
+  staticLoadState.set(key, {
+    status: "loading",
+    candidateCount: directCandidates.length
+  });
+
+  const promise = (async () => {
+    let lastError = null;
+    const attempts = [];
+    const attemptedUrls = new Set();
+
+    async function tryCandidates(candidates, labelPrefix = "") {
+      for (const candidate of candidates) {
+        if (!candidate?.url || attemptedUrls.has(candidate.url)) continue;
+        attemptedUrls.add(candidate.url);
+        const title = candidate.resource?.title || candidate.resource?.format || "GTFS statique";
+
+        try {
+          const result = await parseStaticGtfsCandidate(candidate, Math.max(directCandidates.length, candidates.length));
+          staticFeedCache.set(key, result);
+          staticLoadState.set(key, {
+            status: "loaded",
+            candidateCount: directCandidates.length,
+            fallbackCount: Math.max(0, candidates.length - directCandidates.length),
+            title: result.sourceTitle,
+            url: result.sourceUrl,
+            sourceKind: result.sourceKind,
+            lastModified: result.sourceLastModified
+          });
+          return result;
+        } catch (error) {
+          lastError = error;
+          const reason = error?.name === "AbortError" ? "délai dépassé" : (error?.message || "échec");
+          attempts.push(`${labelPrefix}${title}: ${reason}`);
+          console.warn("GTFS statique candidat non chargé :", title, candidate.url, error);
+        }
+      }
+      return null;
+    }
+
+    // 1) Ressource courante publiée par le producteur, avec « en cours » prioritaire.
+    let result = await tryCandidates(directCandidates);
+    if (result) return result;
+
+    // 2) Si le téléchargement direct est bloqué par CORS, on tente la copie
+    // historisée du PAN (URL permanente). Cela conserve le HTML autonome et
+    // évite d'utiliser un proxy tiers du type cors-anywhere.
+    const panCandidates = await panArchiveStaticResources(dataset);
+    if (panCandidates.length) {
+      staticLoadState.set(key, {
+        status: "loading",
+        candidateCount: directCandidates.length,
+        fallbackCount: panCandidates.length
+      });
+      result = await tryCandidates(panCandidates, "copie PAN — ");
+      if (result) return result;
+    }
+
+    staticLoadState.set(key, {
+      status: "error",
+      candidateCount: directCandidates.length,
+      fallbackCount: panCandidates.length,
+      error: attempts.slice(0, 6).join(" ; ") || lastError?.message || "échec inconnu"
+    });
+
+    throw lastError || new Error("Impossible de charger le GTFS statique.");
+  })();
+
+  staticLoading.set(key, promise);
+
+  try {
+    return await promise;
+  } finally {
+    staticLoading.delete(key);
+  }
+}
+
+function formatGtfsTime(value) {
+  if (!value) return "—";
+  const parts = String(value).split(":");
+  if (parts.length !== 3) return value;
+
+  const h = Number(parts[0]);
+  const m = Number(parts[1]);
+
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return value;
+
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function timeToSeconds(value) {
+  if (!value) return null;
+
+  const p = String(value).split(":").map(Number);
+  if (p.length !== 3 || p.some(Number.isNaN)) return null;
+
+  return p[0] * 3600 + p[1] * 60 + p[2];
+}
+
+function nowGtfsSeconds() {
+  const d = new Date();
+  return d.getHours() * 3600 +
+         d.getMinutes() * 60 +
+         d.getSeconds();
+}
+
+function delayText(delay) {
+  if (delay === null || delay === undefined ||
+      !Number.isFinite(Number(delay))) {
+    return {
+      text: "Retard non disponible",
+      className: ""
+    };
+  }
+
+  const seconds = Number(delay);
+
+  if (seconds > 30) {
+    return {
+      text: `En retard de ${Math.round(seconds / 60)} min`,
+      className: "late"
+    };
+  }
+
+  if (seconds < -30) {
+    return {
+      text: `En avance de ${Math.round(Math.abs(seconds) / 60)} min`,
+      className: "early"
+    };
+  }
+
+  return {
+    text: "À l'heure",
+    className: "ontime"
+  };
+}
+
+function transportMode(route) {
+  const type = Number(route?.route_type);
+  if (type === 0) return { name: "Tramway", emoji: "🚋", color: "#8e44ad" };
+  if (type === 1) return { name: "Métro", emoji: "🚇", color: "#34495e" };
+  if (type === 2 || (type >= 100 && type < 200)) return { name: "Train", emoji: "🚆", color: "#2c3e50" };
+  if (type === 3 || (type >= 200 && type < 300)) return { name: "Bus", emoji: "🚌", color: "#1976d2" };
+  if (type === 4) return { name: "Ferry", emoji: "⛴️", color: "#168aad" };
+  if (type === 5) return { name: "Téléphérique", emoji: "🚡", color: "#795548" };
+  if (type === 6) return { name: "Télécabine", emoji: "🚠", color: "#795548" };
+  if (type === 7) return { name: "Funiculaire", emoji: "🚞", color: "#795548" };
+  if (type === 11) return { name: "Trolleybus", emoji: "🚎", color: "#1976d2" };
+  if (type === 12) return { name: "Monorail", emoji: "🚝", color: "#2c3e50" };
+  return { name: "Transport", emoji: "🚍", color: "#1976d2" };
+}
+
+function transportIcon(route) {
+  const mode = transportMode(route);
+  const fill = mode.color;
+  return `
+    <svg class="vehicle-svg" viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="5" y="4" width="22" height="22" rx="7" fill="${fill}"/>
+      <rect x="8" y="8" width="16" height="8" rx="2" fill="white" opacity=".95"/>
+      <circle cx="11" cy="23" r="2.5" fill="#222"/>
+      <circle cx="21" cy="23" r="2.5" fill="#222"/>
+      <rect x="10" y="18" width="12" height="2" rx="1" fill="white" opacity=".9"/>
+    </svg>`;
+}
+
+function routeLabel(route) {
+  if (!route) return "Ligne inconnue";
+
+  return [
+    route.route_short_name,
+    route.route_long_name
+  ].filter(Boolean).join(" — ") || "Ligne inconnue";
+}
+
+function getTripStaticInfo(staticGtfs, tripId) {
+  if (!staticGtfs || !tripId) return null;
+
+  const trip = staticGtfs.tripById.get(tripId);
+  if (!trip) return null;
+
+  const route = staticGtfs.routeById.get(trip.route_id);
+  const stopTimes = staticGtfs.stopTimesByTrip.get(tripId) || [];
+
+  if (!stopTimes.length) {
+    return {
+      trip,
+      route,
+      stopTimes: [],
+      first: null,
+      last: null
+    };
+  }
+
+  return {
+    trip,
+    route,
+    stopTimes,
+    first: stopTimes[0],
+    last: stopTimes[stopTimes.length - 1]
+  };
+}
+
+function getStopName(staticGtfs, stopId) {
+  if (!staticGtfs || !stopId) return stopId || "—";
+
+  return staticGtfs.stopById.get(stopId)?.stop_name ||
+         stopId;
+}
+
+function getTripUpdateForVehicle(tripUpdates, tripId) {
+  if (!tripId) return null;
+  return tripUpdates.get(tripId) || null;
+}
+
+function getRealtimeStopUpdates(tripUpdate) {
+  return tripUpdate?.stopTimeUpdate || tripUpdate?.stop_time_update || [];
+}
+
+function getCurrentSequence(vehicle, tripUpdate) {
+  const vp = Number(vehicle?.currentStopSequence || 0);
+  if (vp) return vp;
+  const updates = getRealtimeStopUpdates(tripUpdate);
+  const future = updates
+    .map(u => Number(u.stopSequence || 0))
+    .filter(Boolean)
+    .sort((a,b) => a-b);
+  return future[0] || 0;
+}
+
+function findDelayForVehicle(vehicle, tripUpdate, staticInfo) {
+  const updates = getRealtimeStopUpdates(tripUpdate)
+    .slice()
+    .sort((a,b) => Number(a.stopSequence || 0) - Number(b.stopSequence || 0));
+  if (!updates.length) return null;
+
+  const currentSequence = getCurrentSequence(vehicle, tripUpdate);
+  let candidate = currentSequence
+    ? updates.find(x => Number(x.stopSequence || 0) >= currentSequence)
+    : updates[0];
+
+  if (!candidate) candidate = updates[updates.length - 1];
+  const delay = candidate.departure?.delay ?? candidate.arrival?.delay;
+  return Number.isFinite(Number(delay)) ? Number(delay) : null;
+}
+
+function nextStopSequence(vehicle, staticInfo, tripUpdate = null) {
+  const staticStops = staticInfo?.stopTimes || [];
+  const updates = getRealtimeStopUpdates(tripUpdate);
+  const current = getCurrentSequence(vehicle, tripUpdate);
+
+  if (!staticStops.length) return [];
+
+  return staticStops.filter(st => {
+    const seq = Number(st.stop_sequence || 0);
+    if (!current) return true;
+    return seq >= current;
+  });
+}
+
+function plannedTimeForStop(stopTime) {
+  return stopTime?.arrival_time ||
+         stopTime?.departure_time ||
+         "—";
+}
+
+function expectedTime(stopTime, delay) {
+  const base = plannedTimeForStop(stopTime);
+  const seconds = timeToSeconds(base);
+
+  if (seconds === null || delay === null ||
+      !Number.isFinite(Number(delay))) {
+    return base;
+  }
+
+  const v = seconds + Number(delay);
+  const h = Math.floor(v / 3600);
+  const m = Math.floor((v % 3600) / 60);
+  const sec = v % 60;
+
+  return `${String(h).padStart(2, "0")}:` +
+         `${String(m).padStart(2, "0")}:` +
+         `${String(sec).padStart(2, "0")}`;
+}
+
+/* ============================================================
+   FETCH AVEC TIMEOUT
+   ============================================================ */
+
+async function fetchWithTimeout(url, timeoutMs = TEST_TIMEOUT) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "Accept": "application/x-protobuf, application/octet-stream, application/json, */*"
+      }
+    });
+
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status} ${response.statusText || ""}`);
+      error.status = response.status;
+      error.retryAfter = response.headers.get("retry-after");
+      throw error;
+    }
+
+    const contentType =
+      (response.headers.get("content-type") || "").toLowerCase();
+
+    const buffer = await response.arrayBuffer();
+
+    if (!buffer.byteLength) {
+      throw new Error("Réponse vide.");
+    }
+
+    return { response, contentType, buffer };
+
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* ============================================================
+   VÉRIFICATION D'EXPLOITABILITÉ
+   ============================================================ */
+
+async function verifyUrl(url, force = false) {
+  if (!directRealtimeAllowed(url)) return { ok: false, kind: "excluded", message: "Source exclue : accès direct indisponible ou proxy requis." };
+  if (Date.now() < (feedRetryAfter.get(url) || 0)) return { ok: false, kind: "rate-limit", message: "Limite du serveur atteinte : attente avant reprise." };
+  if (!force && verification.has(url)) {
+    return verification.get(url);
+  }
+
+  try {
+    /*
+     * Cette requête est volontairement directe.
+     * Si le serveur renvoie HTTP 200 mais aucun
+     * Access-Control-Allow-Origin, le navigateur déclenche
+     * généralement une TypeError/NetworkError ici.
+     *
+     * Le navigateur ne distingue pas toujours un blocage CORS
+     * d’une panne réseau : suspendre les appels directs sans proxy.
+     */
+    const { response, contentType, buffer } =
+      await fetchWithTimeout(url);
+
+    let decoded;
+
+    const isJson =
+      contentType.includes("json") ||
+      contentType.includes("text/json");
+
+    if (isJson) {
+      decoded = decodeJson(new TextDecoder().decode(buffer));
+    } else {
+      /*
+       * Les flux GTFS-RT standards sont des protobuf binaires.
+       * Même si le Content-Type est incorrect, on tente le décodage.
+       */
+      try {
+        decoded = decodeProtobuf(buffer);
+      } catch (protobufError) {
+        /*
+         * Certains serveurs renvoient du JSON avec un Content-Type
+         * incorrect. On tente donc aussi JSON comme second choix.
+         */
+        try {
+          decoded = decodeJson(new TextDecoder().decode(buffer));
+        } catch {
+          throw new Error(
+            "Réponse accessible mais GTFS-RT non décodable."
+          );
+        }
+      }
+    }
+
+    const feed = decoded.feed;
+
+    const vehicles = positionedVehicles(feed);
+    const entityCount = countEntities(feed);
+    const tripUpdateCount = feedEntities(feed).filter(e => e.tripUpdate || e.trip_update).length;
+    const alertCount = feedEntities(feed).filter(e => e.alert).length;
+    const isEmpty = entityCount === 0;
+
+    const result = {
+      // Un flux décodable mais sans aucune entité ne fournit rien
+      // d'exploitable à l'application au moment du test.
+      ok: !isEmpty,
+      kind: isEmpty ? "empty" : decoded.format,
+      version: decoded.version,
+      vehicleCount: vehicles.length,
+      entityCount,
+      tripUpdateCount,
+      alertCount,
+      feedTimestamp: feed.header?.timestamp
+        ? Number(feed.header.timestamp)
+        : null,
+      feed: feed,
+      message: isEmpty
+        ? `Inexploitable actuellement — ${decoded.format.toUpperCase()}, GTFS-RT ${decoded.version}, 0 véhicule, 0 entité.`
+        : tripUpdateCount > 0 && vehicles.length === 0
+          ? `Exploitable — ${decoded.format.toUpperCase()}, GTFS-RT ${decoded.version}, ` +
+            `${tripUpdateCount} course(s) temps réel (TripUpdate), 0 position véhicule.`
+          : `Exploitable — ${decoded.format.toUpperCase()}, ` +
+            `GTFS-RT ${decoded.version}, ` +
+            `${vehicles.length} véhicule(s), ` +
+            `${tripUpdateCount ? `${tripUpdateCount} TripUpdate(s), ` : ""}` +
+            `${entityCount} entité(s).`
+    };
+
+    directFailures.delete(url);
+    verification.set(url, result);
+    return result;
+
+  } catch (error) {
+    let kind = "error";
+    let message = error.message || "Erreur inconnue.";
+
+    if (error.status === 429) {
+      const retryAt = /^\d+$/.test(error.retryAfter || "")
+        ? Date.now() + Number(error.retryAfter) * 1000 : Date.parse(error.retryAfter);
+      feedRetryAfter.set(url, Math.max(Date.now() + REFRESH_INTERVAL, retryAt || Date.now() + 300000));
+      kind = "rate-limit";
+      message = "Limite du serveur atteinte : attente avant reprise.";
+    } else if ([401, 403].includes(error.status)) {
+      directFailures.add(url);
+      kind = "auth";
+      message = "Accès refusé. Actualisation automatique suspendue.";
+    } else if (error.name === "AbortError") {
+      kind = "timeout";
+      message = `Timeout après ${TEST_TIMEOUT / 1000} secondes.`;
+    } else if (
+      error instanceof TypeError ||
+      /network|cors|cross-origin|failed to fetch/i.test(message)
+    ) {
+      kind = "cors";
+      directFailures.add(url);
+      message = "Appel direct impossible (CORS ou réseau). Actualisation suspendue ; aucun proxy ne sera utilisé.";
+    }
+
+    const result = {
+      ok: false,
+      kind,
+      message
+    };
+
+    verification.set(url, result);
+    return result;
+  }
+}
+
+
+/* ============================================================
+   ÉTAPE 4 — TRACÉ DES COURSES ET PROGRESSION
+   ============================================================ */
+
+function sanitizeRouteColor(route) {
+  const raw = String(route?.route_color || "").trim().replace(/^#/, "");
+  const fallback = String(transportMode(route).color || "#0b3d91").replace(/^#/, "");
+  const hex = /^[0-9a-f]{6}$/i.test(raw) ? raw : fallback;
+
+  let r = parseInt(hex.slice(0, 2), 16);
+  let g = parseInt(hex.slice(2, 4), 16);
+  let b = parseInt(hex.slice(4, 6), 16);
+
+  const srgb = value => {
+    const c = value / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = () => 0.2126 * srgb(r) + 0.7152 * srgb(g) + 0.0722 * srgb(b);
+  const contrastOnWhite = () => 1.05 / (luminance() + 0.05);
+
+  // Les couleurs opérateur très claires deviennent illisibles sur un fond de carte.
+  // On conserve la teinte mais on la fonce jusqu'à obtenir un contraste net sur blanc.
+  let guard = 0;
+  while (contrastOnWhite() < 4.0 && guard < 12) {
+    r = Math.max(0, Math.round(r * 0.78));
+    g = Math.max(0, Math.round(g * 0.78));
+    b = Math.max(0, Math.round(b * 0.78));
+    guard++;
+  }
+
+  return `#${[r, g, b].map(v => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function haversineMeters(a, b) {
+  const toRad = value => value * Math.PI / 180;
+  const lat1 = toRad(a[1]);
+  const lat2 = toRad(b[1]);
+  const dLat = lat2 - lat1;
+  const dLon = toRad(b[0] - a[0]);
+  const h = Math.sin(dLat / 2) ** 2 +
+            Math.cos(lat1) * Math.cos(lat2) *
+            Math.sin(dLon / 2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function tripRouteCoordinates(staticGtfs, staticInfo) {
+  if (!staticGtfs || !staticInfo) {
+    return { coordinates: [], source: "indisponible" };
+  }
+
+  const shapeId = staticInfo.trip?.shape_id;
+  const shape = shapeId ? staticGtfs.shapeById?.get(shapeId) : null;
+
+  if (shape?.length >= 2) {
+    return {
+      coordinates: shape.map(point => [point.lon, point.lat]),
+      source: "shapes.txt"
+    };
+  }
+
+  const coordinates = [];
+  for (const stopTime of staticInfo.stopTimes || []) {
+    const stop = staticGtfs.stopById.get(stopTime.stop_id);
+    const lat = Number(stop?.stop_lat);
+    const lon = Number(stop?.stop_lon);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      coordinates.push([lon, lat]);
+    }
+  }
+
+  return {
+    coordinates,
+    source: coordinates.length >= 2 ? "arrêts GTFS" : "indisponible"
+  };
+}
+
+function projectPointOnPolyline(point, coordinates) {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return null;
+
+  const segmentLengths = [];
+  let totalDistance = 0;
+
+  for (let i = 0; i < coordinates.length - 1; i++) {
+    const length = haversineMeters(coordinates[i], coordinates[i + 1]);
+    segmentLengths.push(length);
+    totalDistance += length;
+  }
+
+  let best = null;
+  let distanceBefore = 0;
+
+  for (let i = 0; i < coordinates.length - 1; i++) {
+    const a = coordinates[i];
+    const b = coordinates[i + 1];
+    const refLat = (a[1] + b[1] + point[1]) / 3 * Math.PI / 180;
+    const scaleX = Math.max(0.2, Math.cos(refLat));
+
+    const ax = a[0] * scaleX;
+    const ay = a[1];
+    const bx = b[0] * scaleX;
+    const by = b[1];
+    const px = point[0] * scaleX;
+    const py = point[1];
+
+    const dx = bx - ax;
+    const dy = by - ay;
+    const denom = dx * dx + dy * dy;
+    const tRaw = denom ? ((px - ax) * dx + (py - ay) * dy) / denom : 0;
+    const t = Math.max(0, Math.min(1, tRaw));
+    const qx = ax + t * dx;
+    const qy = ay + t * dy;
+    const d2 = (px - qx) ** 2 + (py - qy) ** 2;
+    const projected = [
+      a[0] + t * (b[0] - a[0]),
+      a[1] + t * (b[1] - a[1])
+    ];
+
+    if (!best || d2 < best.d2) {
+      const along = distanceBefore + segmentLengths[i] * t;
+      best = {
+        d2,
+        segmentIndex: i,
+        t,
+        projected,
+        distanceAlong: along,
+        totalDistance,
+        progress: totalDistance > 0 ? along / totalDistance : 0
+      };
+    }
+
+    distanceBefore += segmentLengths[i];
+  }
+
+  return best;
+}
+
+function splitPolylineAtProjection(coordinates, projection) {
+  if (!projection || coordinates.length < 2) {
+    return { completed: [], remaining: coordinates.slice() };
+  }
+
+  const i = projection.segmentIndex;
+  const q = projection.projected;
+  const completed = coordinates.slice(0, i + 1);
+  const remaining = coordinates.slice(i + 1);
+
+  const sameAs = (a, b) =>
+    a && b && Math.abs(a[0] - b[0]) < 1e-10 && Math.abs(a[1] - b[1]) < 1e-10;
+
+  if (!sameAs(completed[completed.length - 1], q)) completed.push(q);
+  if (!sameAs(remaining[0], q)) remaining.unshift(q);
+
+  return { completed, remaining };
+}
+
+function routeFeature(coordinates, properties) {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return null;
+  return {
+    type: "Feature",
+    properties,
+    geometry: {
+      type: "LineString",
+      coordinates
+    }
+  };
+}
+
+function drawRouteLayers(completedFeatures, remainingFeatures, zoneId = "metropole") {
+  const targetMap = mapForZone(zoneId);
+
+  if (!targetMap || !targetMap.isStyleLoaded()) {
+    pendingRouteData = {
+      zoneId,
+      completed: completedFeatures,
+      remaining: remainingFeatures
+    };
+    return;
+  }
+
+  clearRouteLayers();
+  markAtlasZoneActive(zoneId);
+
+  const completed = {
+    type: "FeatureCollection",
+    features: completedFeatures.filter(Boolean)
+  };
+  const remaining = {
+    type: "FeatureCollection",
+    features: remainingFeatures.filter(Boolean)
+  };
+
+  targetMap.addSource(ROUTE_SOURCE_REMAINING, {
+    type: "geojson",
+    data: remaining
+  });
+
+  targetMap.addLayer({
+    id: ROUTE_LAYER_REMAINING_CASING,
+    type: "line",
+    source: ROUTE_SOURCE_REMAINING,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round"
+    },
+    paint: {
+      "line-color": "#ffffff",
+      "line-width": 9,
+      "line-opacity": 0.96,
+      "line-dasharray": [1.8, 1.45]
+    }
+  });
+
+  targetMap.addLayer({
+    id: ROUTE_LAYER_REMAINING,
+    type: "line",
+    source: ROUTE_SOURCE_REMAINING,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round"
+    },
+    paint: {
+      "line-color": ["coalesce", ["get", "color"], "#0b3d91"],
+      "line-width": 5,
+      "line-opacity": 0.98,
+      "line-dasharray": [1.8, 1.45]
+    }
+  });
+
+  targetMap.addSource(ROUTE_SOURCE_COMPLETED, {
+    type: "geojson",
+    data: completed
+  });
+
+  targetMap.addLayer({
+    id: ROUTE_LAYER_COMPLETED_CASING,
+    type: "line",
+    source: ROUTE_SOURCE_COMPLETED,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round"
+    },
+    paint: {
+      "line-color": "#ffffff",
+      "line-width": 11,
+      "line-opacity": 0.98
+    }
+  });
+
+  targetMap.addLayer({
+    id: ROUTE_LAYER_COMPLETED,
+    type: "line",
+    source: ROUTE_SOURCE_COMPLETED,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round"
+    },
+    paint: {
+      "line-color": ["coalesce", ["get", "color"], "#0b3d91"],
+      "line-width": 7,
+      "line-opacity": 1
+    }
+  });
+}
+
+function boundsFromCoordinates(coordinates) {
+  if (!coordinates.length) return null;
+  const bounds = new maplibregl.LngLatBounds();
+  for (const coord of coordinates) {
+    if (!coord || !Number.isFinite(coord[0]) || !Number.isFinite(coord[1])) continue;
+    bounds.extend(coord);
+  }
+  return bounds.isEmpty() ? null : bounds;
+}
+
+function fitCurrentNetwork() {
+  const targetMap = mapForZone(lastMapZoneId);
+  if (!targetMap || !lastMapBounds) return;
+
+  markAtlasZoneActive(lastMapZoneId);
+
+  const padding = lastMapZoneId === "metropole"
+    ? { top: 150, right: 70, bottom: 70, left: $("panel").classList.contains("collapsed") ? 70 : Math.min(540, window.innerWidth * 0.42) }
+    : 22;
+
+  targetMap.fitBounds(lastMapBounds, {
+    padding,
+    maxZoom: 14,
+    duration: 650
+  });
+}
+
+function progressSummary(projection) {
+  if (!projection || !Number.isFinite(projection.progress)) {
+    return {
+      percent: null,
+      text: "Progression non calculable",
+      remainingKm: null,
+      totalKm: null
+    };
+  }
+
+  const percent = Math.max(0, Math.min(100, projection.progress * 100));
+  const totalKm = projection.totalDistance / 1000;
+  const remainingKm = Math.max(0, projection.totalDistance - projection.distanceAlong) / 1000;
+
+  return {
+    percent,
+    text: `${Math.round(percent)} % du trajet`,
+    remainingKm,
+    totalKm
+  };
+}
+
+/* ============================================================
+   BADGES
+   ============================================================ */
+
+function badge(result) {
+  if (!result) {
+    return '<span class="badge test">non testé</span>';
+  }
+
+  if (result.ok) {
+    return '<span class="badge ok">exploitable</span>';
+  }
+
+  if (result.kind === "cors") {
+    return '<span class="badge cors">CORS bloqué</span>';
+  }
+
+  return '<span class="badge invalid">inexploitable</span>';
+}
+
+/* ============================================================
+   AFFICHAGE DES RÉSULTATS
+   ============================================================ */
+
+function staticGtfsIndicator(dataset) {
+  const resources = staticResources(dataset);
+  const state = staticLoadState.get(datasetCacheKey(dataset));
+
+  if (state?.status === "loaded") {
+    const date = formatResourceDate(state.lastModified);
+    const suffix = date ? ` — ${date}` : "";
+    const source = state.sourceKind === "pan-archive"
+      ? " — copie historisée PAN"
+      : state.sourceKind === "pan-resource"
+        ? " — ressource PAN"
+        : "";
+    return `<div class="static-status found">GTFS statique utilisé : ${escapeHtml(state.title || "GTFS sélectionné")}${escapeHtml(suffix)}${escapeHtml(source)}</div>`;
+  }
+
+  if (state?.status === "loading") {
+    return `<div class="static-status found">GTFS statique : chargement et sélection en cours…</div>`;
+  }
+
+  if (state?.status === "error") {
+    const fallback = state.fallbackCount ? ` — ${state.fallbackCount} copie(s) PAN testée(s)` : "";
+    return `<div class="static-status missing">GTFS statique indisponible : ${resources.length} ressource(s) référencée(s), mais aucun fichier n'a pu être chargé${escapeHtml(fallback)} — le temps réel reste affiché sans enrichissement statique — ${escapeHtml(state.error || "erreur inconnue")}</div>`;
+  }
+
+  if (resources.length) {
+    const first = resources[0]?.resource?.title || "GTFS le plus pertinent";
+    const suffix = resources.length > 1
+      ? ` (${resources.length} candidats — « en cours » prioritaire)`
+      : "";
+    return `<div class="static-status found">GTFS statique : trouvé${suffix} — candidat prioritaire : ${escapeHtml(first)}</div>`;
+  }
+
+  return '<div class="static-status missing">GTFS statique : non trouvé dans ce jeu de données</div>';
+}
+
+function renderDatasets() {
+  const container = $("results");
+  container.innerHTML = "";
+  let datasetCount = 0;
+  let resourceCount = 0;
+
+  for (const dataset of datasets) {
+    const allResources = gtfsResources(dataset).filter(item => datasetByFeedUrl.get(item.url) === dataset);
+    if (!allResources.length) continue;
+
+    // Seules les ressources explicitement vérifiées comme exploitables
+    // sont affichées. Ce comportement est permanent.
+    const resources = allResources.filter(
+      item => verification.get(item.url)?.ok === true
+    );
+
+    if (!resources.length) continue;
+
+    const box = document.createElement("div");
+    box.className = "dataset";
+    box.innerHTML = `
+      <div class="dataset-title">${escapeHtml(dataset.title || "Jeu de données sans titre")}</div>
+      <div class="dataset-org">${escapeHtml(dataset.organization?.name || "Producteur non indiqué")}</div>
+    `;
+
+    for (const item of resources) {
+      resourceCount++;
+      const result = verification.get(item.url);
+      const title = item.resource.title || item.resource.format || "Ressource GTFS-RT";
+      const resourceBox = document.createElement("div");
+      resourceBox.className = "resource";
+      const mapCapable = result.vehicleCount > 0;
+      resourceBox.innerHTML = `
+        <div class="resource-title">${escapeHtml(title)} ${badge(result)}</div>
+        <div class="url">${escapeHtml(redactedUrl(item.url))}</div>
+        <div class="resource-role">${escapeHtml(realtimeResourceRole(item.kind))}</div>
+        <div class="details"></div>
+        ${staticGtfsIndicator(dataset)}
+        <div class="actions">
+          <button data-test>Vérifier</button>
+          ${mapCapable
+            ? '<button data-use class="green">Voir sur la carte</button>'
+            : '<span class="resource-role">Complément chargé automatiquement avec les positions du même réseau.</span>'}
+        </div>
+      `;
+
+      const details = resourceBox.querySelector(".details");
+      const testButton = resourceBox.querySelector("[data-test]");
+      const useButton = resourceBox.querySelector("[data-use]");
+
+      if (result) {
+        details.textContent = result.message;
+        if (useButton) useButton.disabled = !result.ok;
+      }
+
+      testButton.addEventListener("click", async () => {
+        testButton.disabled = true;
+        testButton.textContent = "Test…";
+        details.textContent = "Requête + décodage en cours…";
+        const checked = await verifyUrl(item.url, true);
+        testButton.disabled = false;
+        testButton.textContent = "Re-tester";
+        details.textContent = checked.message;
+        if (useButton) useButton.disabled = !checked.ok;
+        applyVerifiedFeed(item.url, checked);
+        renderDatasets();
+      });
+
+      if (useButton) useButton.addEventListener("click", async () => {
+        const checked = verification.get(item.url) || await verifyUrl(item.url);
+        if (!checked.ok) {
+          status("Flux non exploitable : " + checked.message, "error");
+          renderDatasets();
+          return;
+        }
+        applyVerifiedFeed(item.url, checked);
+        const state = displayedFeeds.get(item.url);
+        if (!state) return;
+        const zoneId = dominantZone(state.coordinates);
+        lastMapZoneId = zoneId;
+        lastMapBounds = boundsFromCoordinates(state.coordinates.get(zoneId) || []);
+        fitCurrentNetwork();
+      });
+
+      box.appendChild(resourceBox);
+    }
+
+    container.appendChild(box);
+    datasetCount++;
+  }
+
+  if (!resourceCount) {
+    container.innerHTML = '<div class="status warn">Recherche automatique des flux en cours. Les véhicules apparaissent dès que leurs positions sont disponibles.</div>';
+  }
+
+  $("testInfo").textContent =
+    `${resourceCount} flux exploitable(s) dans ${datasetCount} jeu(x) de données — affichage automatique.`;
+}
+
+/* ============================================================
+   CHARGEMENT AUTOMATIQUE DATA.GOUV.FR — GTFS-RT
+   ============================================================ */
+
+async function loadGtfsRtDatasets() {
+  stopRefresh();
+  displayedFeeds.clear();
+  datasetByFeedUrl.clear();
+  selectedVehicleKey = null;
+  clearMarkers();
+  status("Recherche des réseaux et affichage automatique des véhicules…");
+
+  try {
+    datasets = [];
+    try {
+      const { buffer } = await fetchWithTimeout(TRANSPORT_DATA_API, 30000);
+      const catalogue = JSON.parse(new TextDecoder().decode(buffer));
+      if (!Array.isArray(catalogue)) throw new Error("Catalogue PAN invalide");
+      datasets = catalogue.map(dataset => ({
+        ...dataset, organization: dataset.organization || dataset.publisher,
+        resources: resourcesOf(dataset).map(resource => ({ ...resource,
+          // Le PAN fournit des URL de téléchargement : utiliser le producteur directement.
+          url: resource.original_url || resourceUrl(resource), download_url: null
+        }))
+      })).filter(dataset => gtfsResources(dataset).length);
+    } catch (error) {
+      console.warn("Catalogue PAN indisponible, recherche data.gouv.fr", error);
+      let url = DATA_GOUV_API + "?q=gtfs-rt&page_size=50";
+      const visitedPages = new Set();
+      while (url && !visitedPages.has(url)) {
+        visitedPages.add(url);
+        const { buffer } = await fetchWithTimeout(url, 30000);
+        const data = JSON.parse(new TextDecoder().decode(buffer));
+        for (const dataset of data.data || data.results || []) {
+          if (!datasets.some(d => datasetCacheKey(d) === datasetCacheKey(dataset))) datasets.push(dataset);
+        }
+        url = data.next_page ? new URL(data.next_page, DATA_GOUV_API).href : null;
+      }
+    }
+  } catch (error) {
+    console.warn("Catalogues indisponibles ; les réseaux publics restent chargés", error);
+  }
+  try {
+    for (const seed of PUBLIC_NETWORKS) {
+      const existing = datasets.find(d => datasetCacheKey(d) === seed.id ||
+        resourcesOf(d).some(r => seed.resources.some(sr => resourceUrl(r) === sr.url)));
+      if (existing) {
+        for (const resource of seed.resources) {
+          if (!resourcesOf(existing).some(r => resourceUrl(r) === resource.url)) existing.resources.push(resource);
+        }
+      } else datasets.push({ ...seed, resources: [...seed.resources] });
+    }
+    for (const dataset of datasets) {
+      for (const item of gtfsResources(dataset)) {
+        if (!datasetByFeedUrl.has(item.url)) datasetByFeedUrl.set(item.url, dataset);
+      }
+    }
+    renderDatasets();
+    await verifyAll();
+  } catch (error) {
+    console.error(error);
+    status("Erreur de chargement : " + error.message, "error");
+  }
+}
+
+/* ============================================================
+   VÉRIFICATION EN LOT
+   ============================================================ */
+
+async function verifyAll() {
+  if (isVerifying) return;
+  stopRefresh();
+  stopRequested = false;
+  isVerifying = true;
+  const urls = [...datasetByFeedUrl.keys()];
+  if (!urls.length) {
+    isVerifying = false;
+    status("Aucune ressource GTFS-RT identifiable.", "warn");
+    return;
+  }
+  $("testAll").disabled = true;
+  setStopButton("verify");
+  let done = 0, good = 0, bad = 0, next = 0;
+  // Chaque réponse ajoute ses véhicules immédiatement, sans attendre les autres flux.
+  async function worker() {
+    while (next < urls.length && !stopRequested) {
+      const url = urls[next++];
+      const result = await verifyUrl(url, true);
+      applyVerifiedFeed(url, result);
+      if (result.ok) good++; else bad++;
+      done++;
+      renderDatasets();
+      status(`Recherche : ${done}/${urls.length} flux — ${good} exploitable(s), ${bad} inaccessible(s) ou vide(s).`);
+    }
+  }
+  try {
+    await Promise.all(Array.from({ length: Math.min(VERIFY_CONCURRENCY, urls.length) }, worker));
+    status(stopRequested
+      ? `Recherche arrêtée à ${done}/${urls.length} flux. Les véhicules chargés restent visibles.`
+      : `Recherche terminée : ${good} flux exploitable(s). Les véhicules s’actualisent toutes les 30 secondes.`,
+      good ? "ok" : "warn");
+  } finally {
+    isVerifying = false;
+    $("testAll").disabled = false;
+    if (!stopRequested) startRefresh(); else setStopButton();
+  }
+}
+
+/* ============================================================
+   AFFICHAGE SIMULTANÉ DES FLUX VALIDÉS
+   ============================================================ */
+
+function removeFeedMarkers(url) {
+  for (const key of markerKeysByFeed.get(url) || []) {
+    markers.get(key)?.remove();
+    markers.delete(key);
+  }
+  markerKeysByFeed.delete(url);
+}
+
+function updatesForDataset(dataset, feed) {
+  const updates = new Map();
+  if (dataset) {
+    for (const item of gtfsResources(dataset)) {
+      if (item.kind !== "trip") continue;
+      for (const [id, update] of extractTripUpdates(verification.get(item.url)?.feed || {})) updates.set(id, update);
+    }
+  }
+  for (const [id, update] of extractTripUpdates(feed)) updates.set(id, update);
+  return updates;
+}
+
+function applyVerifiedFeed(url, result) {
+  const dataset = datasetByFeedUrl.get(url);
+  const item = dataset && gtfsResources(dataset).find(resource => resource.url === url);
+  if (!item) return;
+  if (item.kind === "trip") {
+    if (selectedVehicleKey) {
+      for (const [feedUrl, state] of displayedFeeds) {
+        if (state.dataset !== dataset) continue;
+        state.tripUpdates = updatesForDataset(dataset, state.feed);
+        renderVehicles(state.feed, state.staticGtfs, state.tripUpdates, feedUrl, dataset);
+      }
+    }
+    return;
+  }
+  const previous = displayedFeeds.get(url);
+  if (!result.feed) {
+    // Retirer les positions anciennes après trois actualisations manquées.
+    if (previous && Date.now() - previous.updatedAt >= STALE_FEED_TIMEOUT) {
+      removeFeedMarkers(url);
+      displayedFeeds.delete(url);
+      if (selectedVehicleKey?.startsWith(JSON.stringify(url) + "|")) {
+        selectedVehicleKey = null;
+        clearCourseDetails();
+      }
+      updateMapSummary();
+    }
+    return;
+  }
+  if (!result.vehicleCount && !previous) return;
+  const state = {
+    dataset, feed: result.feed, updatedAt: Date.now(),
+    staticGtfs: staticFeedCache.get(datasetCacheKey(dataset)) || previous?.staticGtfs || null,
+    tripUpdates: updatesForDataset(dataset, result.feed),
+    coordinates: new Map(), count: 0
+  };
+  displayedFeeds.set(url, state);
+  renderVehicles(state.feed, state.staticGtfs, state.tripUpdates, url, dataset);
+}
+
+function dominantZone(coordinatesByZone) {
+  let zoneId = "metropole", count = -1;
+  for (const [id, coordinates] of coordinatesByZone) {
+    if (coordinates.length > count) { count = coordinates.length; zoneId = id; }
+  }
+  return zoneId;
+}
+
+function updateMapSummary() {
+  const coordinates = new Map();
+  const networks = new Set();
+  let total = 0, updatedAt = 0;
+  for (const state of displayedFeeds.values()) {
+    total += state.count;
+    if (state.count) {
+      networks.add(datasetCacheKey(state.dataset));
+      updatedAt = Math.max(updatedAt, state.updatedAt);
+    }
+    for (const [zoneId, values] of state.coordinates) {
+      if (!coordinates.has(zoneId)) coordinates.set(zoneId, []);
+      coordinates.get(zoneId).push(...values);
+    }
+  }
+  lastMapZoneId = dominantZone(coordinates);
+  lastMapBounds = boundsFromCoordinates(coordinates.get(lastMapZoneId) || []);
+  $("fitMap").disabled = !lastMapBounds;
+  const failed = [...displayedFeeds.keys()].filter(url => !verification.get(url)?.ok).length;
+  $("refresh").textContent = `${total} véhicule(s) · ${networks.size} réseau(x) — dernière réception : ` +
+    (updatedAt ? new Date(updatedAt).toLocaleTimeString("fr-FR") : "—") +
+    (failed ? ` · ${failed} flux temporairement inaccessible(s)` : "");
+}
+
+async function enrichNetwork(url) {
+  const state = displayedFeeds.get(url);
+  if (!state?.dataset) return;
+  const dataset = state.dataset;
+  const key = datasetCacheKey(dataset);
+  if (enrichmentLoading.has(key)) return enrichmentLoading.get(key);
+  if (enrichmentAttempted.has(key)) return;
+  enrichmentAttempted.add(key);
+  const promise = (async () => {
+    const tripUrls = gtfsResources(dataset).filter(item => item.kind === "trip").map(item => item.url);
+    await Promise.all([
+      loadStaticGtfs(dataset).catch(error => console.warn("GTFS statique non chargé :", error)),
+      (async () => {
+        for (const tripUrl of tripUrls) await verifyUrl(tripUrl, true);
+      })()
+    ]);
+    enrichmentLoading.delete(key);
+    for (const [feedUrl, current] of displayedFeeds) {
+      if (datasetCacheKey(current.dataset) !== key) continue;
+      current.staticGtfs = staticFeedCache.get(key) || null;
+      current.tripUpdates = updatesForDataset(current.dataset, current.feed);
+      renderVehicles(current.feed, current.staticGtfs, current.tripUpdates, feedUrl, current.dataset);
+    }
+    renderDatasets();
+  })();
+  enrichmentLoading.set(key, promise);
+  try { await promise; } finally { enrichmentLoading.delete(key); }
+}
+
+async function fetchDecodeFeed(url) {
+  const { contentType, buffer } = await fetchWithTimeout(url);
+
+  if (contentType.includes("json")) {
+    return decodeJson(new TextDecoder().decode(buffer));
+  }
+
+  try {
+    return decodeProtobuf(buffer);
+  } catch {
+    return decodeJson(new TextDecoder().decode(buffer));
+  }
+}
+
+function extractTripUpdates(feed) {
+  const result = new Map();
+
+  for (const entity of feed.entity || []) {
+    const update = entity.tripUpdate;
+
+    if (!update?.trip?.tripId) continue;
+
+    result.set(
+      update.trip.tripId,
+      update
+    );
+  }
+
+  return result;
+}
+
+
+/* ============================================================
+   AFFICHAGE DES VÉHICULES
+   ============================================================ */
+
+function showVehicleCourseDetails(context) {
+  clearCourseDetails();
+
+  const {
+    staticGtfs,
+    staticInfo,
+    tripId,
+    routeName,
+    routeColor,
+    routeGeometry,
+    split,
+    futureStops,
+    currentStopSequence,
+    delay,
+    zoneId
+  } = context;
+
+  const targetMap = mapForZone(zoneId);
+  markAtlasZoneActive(zoneId);
+
+  if (routeGeometry.coordinates.length >= 2) {
+    const properties = {
+      tripId: tripId || "",
+      route: routeName,
+      color: routeColor
+    };
+
+    const completedFeature = routeFeature(split.completed, properties);
+    const remainingFeature = routeFeature(split.remaining, properties);
+
+    drawRouteLayers(
+      completedFeature ? [completedFeature] : [],
+      remainingFeature ? [remainingFeature] : [],
+      zoneId
+    );
+  }
+
+  if (!staticGtfs || !staticInfo) return;
+
+  const stopKeys = new Set();
+
+  for (const stopTime of futureStops) {
+    const stop = staticGtfs.stopById.get(stopTime.stop_id);
+    const slat = Number(stop?.stop_lat);
+    const slon = Number(stop?.stop_lon);
+
+    if (!Number.isFinite(slat) || !Number.isFinite(slon)) continue;
+
+    const key = `${stopTime.stop_id}|${tripId}`;
+    if (stopKeys.has(key)) continue;
+    stopKeys.add(key);
+
+    const stopName = stop?.stop_name || stopTime.stop_id;
+    const planned = plannedTimeForStop(stopTime);
+    const expected = expectedTime(stopTime, delay);
+
+    const stopEl = document.createElement("div");
+    stopEl.className =
+      "stop-marker" +
+      (Number(stopTime.stop_sequence || 0) === currentStopSequence
+        ? " active"
+        : "");
+
+    const popup = `
+      <div class="popup">
+        <strong>🚏 ${escapeHtml(stopName)}</strong><br>
+        ${escapeHtml(routeName)}<br>
+        <strong>Course :</strong> ${escapeHtml(tripId || "—")}<br>
+        <strong>Prévu :</strong> ${escapeHtml(formatGtfsTime(planned))}<br>
+        <strong>Prévision :</strong> ${escapeHtml(formatGtfsTime(expected))}
+      </div>
+    `;
+
+    const stopMarker = new maplibregl.Marker({ element: stopEl })
+      .setLngLat([slon, slat])
+      .setPopup(new maplibregl.Popup({ offset: 10 }).setHTML(popup))
+      .addTo(targetMap);
+
+    markers.set(`course-stop-${key}`, stopMarker);
+  }
+}
+
+function renderVehicles(feed, staticGtfs = null, tripUpdates = new Map(), feedUrl, dataset = null) {
+  // Une actualisation ne doit jamais effacer les autres réseaux.
+  const prefix = JSON.stringify(feedUrl) + "|";
+  const ownsSelection = selectedVehicleKey?.startsWith(prefix);
+  let openPopupKey = null;
+  for (const key of markerKeysByFeed.get(feedUrl) || []) {
+    if (markers.get(key)?.getPopup()?.isOpen()) openPopupKey = key;
+  }
+  removeFeedMarkers(feedUrl);
+  if (ownsSelection) clearCourseDetails();
+  const feedMarkerKeys = new Set();
+  markerKeysByFeed.set(feedUrl, feedMarkerKeys);
+
+  const boundsByZone = new Map();
+  let index = 0;
+  let selectedContext = null;
+
+  for (const entity of feed.entity || []) {
+    const vehicle = entity.vehicle;
+    const position = vehicle?.position;
+
+    if (!position) continue;
+
+    const lat = Number(position.latitude);
+    const lon = Number(position.longitude);
+
+    if (
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lon) ||
+      lat < -90 || lat > 90 ||
+      lon < -180 || lon > 180
+    ) continue;
+
+    const zoneId = zoneIdForCoordinate(lon, lat);
+    const zoneCoordinates = boundsByZone.get(zoneId) || [];
+    zoneCoordinates.push([lon, lat]);
+    boundsByZone.set(zoneId, zoneCoordinates);
+
+    const tripId = vehicle.trip?.tripId || null;
+    const staticInfo = getTripStaticInfo(staticGtfs, tripId);
+    const realtimeRouteId = vehicle.trip?.routeId || getTripUpdateForVehicle(tripUpdates, tripId)?.trip?.routeId || null;
+    const route = staticInfo?.route || staticGtfs?.routeById.get(realtimeRouteId) || null;
+    const tripUpdate = getTripUpdateForVehicle(tripUpdates, tripId);
+    const delay = findDelayForVehicle(vehicle, tripUpdate, staticInfo);
+
+    const id =
+      vehicle.vehicle?.id ||
+      entity.id ||
+      "vehicle-" + index;
+
+    const label = vehicle.vehicle?.label || id;
+    const vehicleKey = prefix + JSON.stringify([String(id), tripId || ""]);
+    const routeName = route
+      ? routeLabel(route)
+      : realtimeRouteId
+        ? `Ligne ${realtimeRouteId}`
+        : "Ligne inconnue";
+    const icon = transportIcon(route);
+    const routeColor = sanitizeRouteColor(route);
+
+    const first = staticInfo?.first;
+    const last = staticInfo?.last;
+
+    const departureName = getStopName(staticGtfs, first?.stop_id);
+    const arrivalName = getStopName(staticGtfs, last?.stop_id);
+
+    const departureTime =
+      first?.departure_time ||
+      first?.arrival_time ||
+      "—";
+
+    const arrivalTime =
+      last?.arrival_time ||
+      last?.departure_time ||
+      "—";
+
+    const delayInfo = delayText(delay);
+    const currentStopSequence = getCurrentSequence(vehicle, tripUpdate);
+    const futureStops = nextStopSequence(vehicle, staticInfo, tripUpdate);
+
+    // La géométrie complète ne sert qu’à la course sélectionnée.
+    const routeGeometry = selectedVehicleKey === vehicleKey
+      ? tripRouteCoordinates(staticGtfs, staticInfo)
+      : { coordinates: [], source: staticGtfs ? "Cliquez pour afficher la course" : "Détails chargés au clic" };
+    const projection = routeGeometry.coordinates.length >= 2
+      ? projectPointOnPolyline([lon, lat], routeGeometry.coordinates)
+      : null;
+    const split = projection
+      ? splitPolylineAtProjection(routeGeometry.coordinates, projection)
+      : { completed: [], remaining: routeGeometry.coordinates };
+    const progress = progressSummary(projection);
+
+    const detailContext = {
+      staticGtfs,
+      staticInfo,
+      tripId,
+      routeName,
+      routeColor,
+      routeGeometry,
+      split,
+      futureStops,
+      currentStopSequence,
+      delay,
+      zoneId
+    };
+
+    const speed = Number(position.speed);
+    const speedText = Number.isFinite(speed)
+      ? (speed * 3.6).toFixed(1) + " km/h"
+      : "—";
+
+    const bearing = Number(position.bearing);
+    const bearingText = Number.isFinite(bearing)
+      ? Math.round(bearing) + "°"
+      : "—";
+
+    let nextStop = "—";
+    let nextStopTime = "—";
+    let nextStopExpected = "—";
+
+    if (futureStops.length && staticGtfs) {
+      const next = futureStops[0];
+      nextStop = getStopName(staticGtfs, next.stop_id);
+      nextStopTime = formatGtfsTime(plannedTimeForStop(next));
+      nextStopExpected = formatGtfsTime(expectedTime(next, delay));
+    } else if (tripUpdate) {
+      const updates = getRealtimeStopUpdates(tripUpdate);
+      const currentSeq = getCurrentSequence(vehicle, tripUpdate);
+      const nextUpdate = updates.find(update => {
+        const seq = Number(update.stopSequence || update.stop_sequence || 0);
+        return !currentSeq || !seq || seq >= currentSeq;
+      }) || updates[0];
+
+      if (nextUpdate) {
+        const stopId = nextUpdate.stopId || nextUpdate.stop_id || "—";
+        const event = nextUpdate.arrival || nextUpdate.departure || null;
+        const eventTime = Number(event?.time);
+        nextStop = stopId;
+        nextStopTime = "—";
+        nextStopExpected = Number.isFinite(eventTime)
+          ? new Date(eventTime * 1000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+          : "—";
+      }
+    }
+
+    const el = document.createElement("div");
+    el.className = "vehicle" + (selectedVehicleKey === vehicleKey ? " selected" : "");
+    el.innerHTML = icon;
+    el.title = `${label} — ${routeName}`;
+
+    const progressHtml = progress.percent === null
+      ? `<div class="route-source">Tracé : ${escapeHtml(routeGeometry.source)}</div>`
+      : `
+        <div class="progress-row">
+          <div class="progress-track">
+            <div class="progress-fill" style="width:${progress.percent.toFixed(1)}%;background:${escapeHtml(routeColor)}"></div>
+          </div>
+          <div class="progress-caption">
+            <span>${escapeHtml(progress.text)}</span>
+            <span>${escapeHtml(progress.remainingKm.toFixed(1))} km restants</span>
+          </div>
+        </div>
+        <div class="route-source">
+          Tracé : ${escapeHtml(routeGeometry.source)} — ${escapeHtml(progress.totalKm.toFixed(1))} km
+        </div>`;
+
+    const popupHtml = `
+      <div class="popup">
+        <div class="map-network">${escapeHtml(dataset?.title || "Réseau de transport")}</div>
+        ${!staticGtfs ? `<div class="route-source">${enrichmentLoading.has(datasetCacheKey(dataset))
+          ? "Chargement des détails de la course…"
+          : enrichmentAttempted.has(datasetCacheKey(dataset))
+            ? "Détails statiques indisponibles pour ce réseau."
+            : "Cliquez sur le véhicule pour charger les détails de la course."}</div>` : ""}
+        <strong>${escapeHtml(transportMode(route).emoji)} ${escapeHtml(label)}</strong><br>
+        <strong>Ligne :</strong> ${escapeHtml(routeName)}<br>
+        <strong>Course :</strong> ${escapeHtml(tripId || "—")}<br>
+        ${progressHtml}<br>
+
+        <strong>Départ :</strong><br>
+        ${escapeHtml(departureName)}
+        — ${escapeHtml(formatGtfsTime(departureTime))}<br>
+
+        <strong>Arrivée :</strong><br>
+        ${escapeHtml(arrivalName)}
+        — ${escapeHtml(formatGtfsTime(arrivalTime))}<br><br>
+
+        <strong>Prochain arrêt :</strong><br>
+        ${escapeHtml(nextStop)}<br>
+        Prévu : ${escapeHtml(nextStopTime)}<br>
+        Prévision : ${escapeHtml(nextStopExpected)}<br><br>
+
+        <span class="${delayInfo.className}">
+          ${escapeHtml(delayInfo.text)}
+        </span><br>
+
+        Vitesse : ${escapeHtml(speedText)}<br>
+        Direction : ${escapeHtml(bearingText)}
+      </div>
+    `;
+
+    const vehiclePopup = new maplibregl.Popup({ offset: 16 }).setHTML(popupHtml);
+    const targetMap = mapForZone(zoneId);
+
+    const marker = new maplibregl.Marker({ element: el })
+      .setLngLat([lon, lat])
+      .setPopup(vehiclePopup)
+      .addTo(targetMap);
+
+    el.addEventListener("click", () => {
+      // MapLibre gère d'abord l'ouverture/fermeture du popup.
+      // On attend le tour d'événement suivant afin de ne sélectionner
+      // la course que si la fiche du véhicule est réellement ouverte.
+      setTimeout(() => {
+        if (!vehiclePopup.isOpen()) return;
+
+        selectedVehicleKey = vehicleKey;
+        document.querySelectorAll(".vehicle.selected").forEach(node => {
+          node.classList.remove("selected");
+        });
+        el.classList.add("selected");
+        const selectedGeometry = tripRouteCoordinates(staticGtfs, staticInfo);
+        const selectedProjection = selectedGeometry.coordinates.length >= 2
+          ? projectPointOnPolyline([lon, lat], selectedGeometry.coordinates) : null;
+        detailContext.routeGeometry = selectedGeometry;
+        detailContext.split = selectedProjection
+          ? splitPolylineAtProjection(selectedGeometry.coordinates, selectedProjection)
+          : { completed: [], remaining: selectedGeometry.coordinates };
+        showVehicleCourseDetails(detailContext);
+        // Ouvrir la fiche enrichie sans attendre le chargement des autres réseaux.
+        if (staticGtfs) renderVehicles(feed, staticGtfs, tripUpdates, feedUrl, dataset);
+        void enrichNetwork(feedUrl);
+      }, 0);
+    });
+
+    // La fermeture de la popup ne désélectionne plus la course.
+    // La sélection reste active tant qu'un autre véhicule n'est pas choisi.
+
+    const markerKey = vehicleKey;
+    markers.set(markerKey, marker);
+    feedMarkerKeys.add(markerKey);
+    if (openPopupKey === markerKey) marker.togglePopup();
+
+    if (selectedVehicleKey === vehicleKey) {
+      selectedContext = detailContext;
+    }
+
+    index++;
+  }
+
+  if (selectedVehicleKey && selectedContext) {
+    showVehicleCourseDetails(selectedContext);
+  } else if (ownsSelection && !selectedContext) {
+    selectedVehicleKey = null;
+    clearCourseDetails();
+  }
+
+  const state = displayedFeeds.get(feedUrl);
+  if (state) {
+    state.coordinates = boundsByZone;
+    state.count = index;
+  }
+  updateMapSummary();
+}
+
+/* ============================================================
+   ACTUALISATION
+   ============================================================ */
+
+function setStopButton(mode = null) {
+  const button = $("stop");
+
+  if (!mode) {
+    button.disabled = true;
+    button.textContent = "Arrêter";
+    button.title = "Disponible pendant une vérification ou l’actualisation d’un flux";
+    return;
+  }
+
+  button.disabled = false;
+  button.textContent = mode === "verify"
+    ? "Arrêter la vérification"
+    : "Arrêter l’actualisation";
+  button.title = mode === "verify"
+    ? "Interrompre la vérification des flux restants"
+    : "Stopper l’actualisation automatique des réseaux";
+}
+
+function stopRefresh() {
+  refreshEpoch++;
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+
+  setStopButton();
+}
+
+function startRefresh() {
+  stopRefresh();
+  const epoch = refreshEpoch;
+  stopRequested = false;
+  setStopButton("refresh");
+  // Un cycle ne chevauche jamais le précédent, même si certains opérateurs sont lents.
+  async function refreshAll() {
+    if (stopRequested || isVerifying || epoch !== refreshEpoch) return;
+    if (refreshInProgress) {
+      refreshTimer = setTimeout(refreshAll, REFRESH_INTERVAL);
+      return;
+    }
+    refreshInProgress = true;
+    const urls = [...datasetByFeedUrl.keys()].filter(url => {
+      const dataset = datasetByFeedUrl.get(url);
+      const item = gtfsResources(dataset).find(resource => resource.url === url);
+      // Retenter les flux vides et les erreurs HTTP temporaires ; les TripUpdates suivent
+      // seulement les réseaux dont les détails ont été demandés.
+      return !directFailures.has(url) && Date.now() >= (feedRetryAfter.get(url) || 0) &&
+        (item?.kind !== "trip" || enrichmentAttempted.has(datasetCacheKey(dataset)));
+    });
+    let next = 0;
+    async function worker() {
+      while (next < urls.length && !stopRequested && epoch === refreshEpoch) {
+        const url = urls[next++];
+        const result = await verifyUrl(url, true);
+        if (epoch !== refreshEpoch) return;
+        applyVerifiedFeed(url, result);
+      }
+    }
+    try {
+      await Promise.all(Array.from({ length: Math.min(VERIFY_CONCURRENCY, urls.length) }, worker));
+      // Les flux suspendus ne sont plus interrogés, mais leurs anciennes positions expirent.
+      for (const [url] of displayedFeeds) {
+        if (!verification.get(url)?.ok) applyVerifiedFeed(url, { ok: false });
+      }
+      renderDatasets();
+      updateMapSummary();
+      await refreshActiveApiStop();
+    } finally {
+      refreshInProgress = false;
+      if (!stopRequested && !isVerifying && epoch === refreshEpoch) refreshTimer = setTimeout(refreshAll, REFRESH_INTERVAL);
+    }
+  }
+  refreshTimer = setTimeout(refreshAll, REFRESH_INTERVAL);
+}
+
+
+/* API directes : référentiel des arrêts + prochains passages à la demande.
+ * Les positions des arrêts ne représentent jamais des positions de véhicules.
+ */
+const API_PROVIDERS = [
+  { id: "prim", name: "Île-de-France Mobilités / PRIM", interval: 120000, budget: 900, maxBudget: 1000000,
+    docs: "https://prim.iledefrance-mobilites.fr/fr/notre-offre",
+    help: "Clé PRIM avec abonnement Prochains passages — requête unitaire. Quota initial : 1 000/jour ; budget conseillé : 900. Augmente le budget uniquement si ton quota a été augmenté.",
+    stopsUrl: "https://data.iledefrance-mobilites.fr/api/explore/v2.1/catalog/datasets/arrets/exports/json?select=arrid,arrname,arrgeopoint,zdaid,arrtype",
+    passagesUrl: "https://prim.iledefrance-mobilites.fr/marketplace/stop-monitoring" },
+  { id: "cts", name: "CTS Strasbourg", interval: 60000, budget: 1000, maxBudget: 1000000,
+    docs: "https://api.cts-strasbourg.eu/index.html",
+    help: "Token CTS (identifiant Basic, mot de passe vide). Pas de quota chiffré publié : le cache et le cycle minimum du serveur sont respectés. Budget local réglable.",
+    stopsUrl: "https://api.cts-strasbourg.eu/v1/siri/2.0/stoppoints-discovery",
+    passagesUrl: "https://api.cts-strasbourg.eu/v1/siri/2.0/stop-monitoring" },
+  { id: "ginko", name: "Ginko Besançon", interval: 60000, budget: 1000, maxBudget: 1000000,
+    docs: "https://api.ginko.voyage/",
+    help: "Clé gratuite Ginko. Pas de quota chiffré publié : budget local réglable. Les données non localisées sont signalées comme théoriques.",
+    stopsUrl: "https://api.ginko.voyage/DR/getArrets.do",
+    passagesUrl: "https://api.ginko.voyage/TR/getTempsLieu.do" }
+];
+const apiStates = new Map();
+const quotaMemory = new Map();
+const API_STORAGE = "gtfs-rt-api-settings-v2";
+const API_STOP_SOURCE = "personal-api-stops";
+const API_STOP_LAYER = "personal-api-stop-points";
+let activeApiStop = null;
+let apiStopEventsBound = false;
+
+function safeStoredJson(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; }
+}
+function putStoredJson(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
+}
+function removeStored(key) { try { localStorage.removeItem(key); } catch {} }
+function quotaDay() {
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
+async function credentialFingerprint(key) {
+  // Identifiant du compteur : la clé elle-même n’est pas conservée dans le compteur.
+  if (globalThis.crypto?.subtle) {
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+    return [...new Uint8Array(hash)].map(v => v.toString(16).padStart(2, "0")).join("");
+  }
+  let a = 2166136261, b = 5381;
+  for (const char of key) { a = Math.imul(a ^ char.charCodeAt(0), 16777619); b = Math.imul(b, 33) ^ char.charCodeAt(0); }
+  return (a >>> 0).toString(16) + (b >>> 0).toString(16);
+}
+function currentQuota(state) {
+  const day = quotaDay();
+  const value = safeStoredJson(state.quotaKey, quotaMemory.get(state.quotaKey) || {});
+  return { day, count: value.day === day ? Number(value.count) || 0 : 0, nextAt: Number(value.nextAt) || 0 };
+}
+function saveQuota(state, value) {
+  quotaMemory.set(state.quotaKey, value);
+  putStoredJson(state.quotaKey, value);
+}
+function apiInfo(id, message) {
+  const state = apiStates.get(id);
+  if (!state) return;
+  if (message !== undefined) state.message = message;
+  const quota = state.quotaKey ? currentQuota(state) : { count: 0 };
+  const label = document.getElementById("api-state-" + id);
+  if (label) label.textContent = `${state.message || "Clé non renseignée."} · Budget local : ${quota.count}/${state.budget || state.provider.budget} aujourd’hui.`;
+}
+async function withQuotaLock(state, action) {
+  if (globalThis.navigator?.locks) {
+    let began = false;
+    try {
+      return await navigator.locks.request(state.quotaKey, () => { began = true; return action(); });
+    } catch (error) {
+      // Certains navigateurs exposent Web Locks mais le refusent sur file://.
+      if (began || !["SecurityError", "NotSupportedError"].includes(error.name)) throw error;
+    }
+  }
+  return action();
+}
+async function reserveApiRequest(state) {
+  return withQuotaLock(state, () => {
+    if (state.blocked) throw new Error(state.blocked);
+    const quota = currentQuota(state), now = Date.now();
+    if (quota.count >= state.budget) throw new Error("Budget quotidien atteint ; reprise le jour suivant (heure de Paris).");
+    if (now < quota.nextAt) throw new Error(`Prochain appel autorisé dans ${Math.ceil((quota.nextAt - now) / 1000)} s.`);
+    quota.count++;
+    quota.nextAt = now + state.provider.interval;
+    saveQuota(state, quota); // Réserver AVANT fetch : erreurs et appels concurrents sont comptabilisés.
+    apiInfo(state.provider.id);
+  });
+}
+function isoDurationMs(text) {
+  const m = /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(text || "");
+  return m ? ((Number(m[1]) || 0) * 3600 + (Number(m[2]) || 0) * 60 + (Number(m[3]) || 0)) * 1000 : 0;
+}
+function siriDeliveries(data) {
+  const service = (data.Siri || data).ServiceDelivery || {};
+  return asList(service.StopMonitoringDelivery);
+}
+function asList(value) { return Array.isArray(value) ? value : value ? [value] : []; }
+function siriText(value) {
+  if (Array.isArray(value)) return value.map(siriText).filter(Boolean).join(" / ");
+  return String(value?.value ?? value ?? "");
+}
+function responseNextAt(response, data, minimum) {
+  const now = Date.now();
+  const maxAge = /(?:^|,)\s*max-age=(\d+)/i.exec(response.headers.get("cache-control") || "");
+  const age = Number(response.headers.get("age")) || 0;
+  let nextAt = Math.max(minimum, maxAge ? now + Math.max(0, Number(maxAge[1]) - age) * 1000 : 0);
+  for (const delivery of siriDeliveries(data)) {
+    nextAt = Math.max(nextAt, Date.parse(delivery.ValidUntil) || 0, now + isoDurationMs(delivery.ShortestPossibleCycle));
+  }
+  return nextAt;
+}
+async function apiJson(state, rawUrl, { authenticated = true } = {}) {
+  const epoch = state.epoch;
+  if (authenticated) await reserveApiRequest(state);
+  if (state.epoch !== epoch) throw new Error("Configuration remplacée.");
+  const url = new URL(rawUrl);
+  const headers = { Accept: "application/json" };
+  if (authenticated) {
+    if (state.provider.id === "prim") headers.apikey = state.key;
+    if (state.provider.id === "cts") headers.Authorization = "Basic " + btoa(state.key + ":");
+    if (state.provider.id === "ginko") url.searchParams.set("apiKey", state.key);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    let response;
+    try {
+      response = await fetch(url.href, { method: "GET", mode: "cors", credentials: "omit", cache: "no-store", headers, signal: controller.signal });
+    } catch (error) {
+      if (error.name === "TypeError" && state.epoch === epoch) state.blocked = "Appel direct bloqué (CORS ou réseau). Appliquer les clés pour retester ; aucun proxy utilisé.";
+      throw new Error(error.name === "AbortError" ? "Délai de réponse dépassé." : "Appel direct impossible (CORS ou réseau).");
+    }
+    if (state.epoch !== epoch) throw new Error("Configuration remplacée.");
+    if (!response.ok) {
+      if ([401, 403].includes(response.status) && authenticated) state.blocked = "Clé refusée ou abonnement API manquant. Corrige la clé puis applique la configuration.";
+      if (response.status === 429 && authenticated) {
+        const retry = response.headers.get("retry-after");
+        const retryAt = /^\d+$/.test(retry || "") ? Date.now() + Number(retry) * 1000 : Date.parse(retry);
+        await withQuotaLock(state, () => {
+          const quota = currentQuota(state);
+          quota.nextAt = Math.max(quota.nextAt, retryAt || Date.now() + 300000);
+          saveQuota(state, quota);
+        });
+      }
+      throw new Error(state.blocked || (response.status === 429 ? "Limite du serveur atteinte ; attente avant reprise." : `API : HTTP ${response.status}.`));
+    }
+    const data = await response.json();
+    if (data.ok === false) {
+      if (/cl[eé]|key|autoris/i.test(data.msg || "")) state.blocked = "Clé refusée ou droits insuffisants. Corrige la clé puis applique la configuration.";
+      throw new Error(state.blocked || "L’API n’a pas pu répondre à cette demande.");
+    }
+    for (const delivery of siriDeliveries(data)) {
+      if (delivery.Status === false || delivery.Status === "false" || delivery.ErrorCondition) throw new Error("Pas de données disponibles pour cet arrêt (référence ou couverture temps réel).");
+    }
+    if (authenticated) await withQuotaLock(state, () => {
+      const quota = currentQuota(state);
+      quota.nextAt = responseNextAt(response, data, quota.nextAt);
+      saveQuota(state, quota);
+    });
+    return { data, receivedAt: Date.now(), epoch };
+  } finally { clearTimeout(timer); }
+}
+function apiStopsFromData(id, data) {
+  const rows = id === "prim" ? asList(data) : id === "ginko" ? asList(data.objets ?? data) : asList(data.StopPointsDelivery?.AnnotatedStopPointRef);
+  const stops = new Map();
+  for (const row of rows) {
+    const ref = id === "prim" ? `STIF:StopPoint:Q:${row.arrid}:` : id === "ginko" ? row.id : row.Extension?.StopCode || siriText(row.StopPointRef);
+    const rawLon = id === "prim" ? row.arrgeopoint?.lon : id === "ginko" ? row.longitude : row.Location?.Longitude;
+    const rawLat = id === "prim" ? row.arrgeopoint?.lat : id === "ginko" ? row.latitude : row.Location?.Latitude;
+    if (rawLon === null || rawLon === undefined || rawLat === null || rawLat === undefined) continue;
+    const lon = Number(rawLon), lat = Number(rawLat);
+    if (!ref || !Number.isFinite(lon) || !Number.isFinite(lat) || Math.abs(lon) > 180 || Math.abs(lat) > 90 || (lon === 0 && lat === 0)) continue;
+    // Référentiel PRIM : privilégier la zone d’arrêt pour les gares ferroviaires.
+    const monitoringRef = id === "prim" && /rail|train|rer/i.test(row.arrtype || "") && row.zdaid ? `STIF:StopArea:SP:${row.zdaid}:` : ref;
+    stops.set(ref, { provider: id, ref: monitoringRef, name: id === "prim" ? row.arrname : id === "ginko" ? row.nom : siriText(row.StopName), lon, lat });
+  }
+  return [...stops.values()];
+}
+function renderApiStops() {
+  if (!map.isStyleLoaded()) return;
+  const features = [];
+  for (const state of apiStates.values()) if (state.key) for (const stop of state.stops || []) {
+    features.push({ type: "Feature", geometry: { type: "Point", coordinates: [stop.lon, stop.lat] }, properties: stop });
+  }
+  const data = { type: "FeatureCollection", features };
+  if (map.getSource(API_STOP_SOURCE)) map.getSource(API_STOP_SOURCE).setData(data);
+  else {
+    map.addSource(API_STOP_SOURCE, { type: "geojson", data });
+    map.addLayer({ id: API_STOP_LAYER, source: API_STOP_SOURCE, type: "circle", minzoom: 10,
+      paint: { "circle-color": "#8654ca", "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 3, 15, 7], "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.5 } });
+  }
+  if (!apiStopEventsBound) {
+    apiStopEventsBound = true;
+    map.on("click", API_STOP_LAYER, event => {
+      const stop = event.features?.[0]?.properties;
+      if (stop) openApiStop({ ...stop, lon: Number(stop.lon), lat: Number(stop.lat) });
+    });
+  }
+}
+function arrivalRows(id, data) {
+  if (id === "ginko") return asList((data.objets ?? data).listeTemps).map(row => ({
+    line: row.numLignePublic || row.idLigne, destination: row.destination,
+    text: row.temps || "Temps indisponible", realtime: row.fiable === true, cancelled: false
+  }));
+  const rows = [];
+  for (const delivery of siriDeliveries(data)) for (const visit of asList(delivery.MonitoredStopVisit)) {
+    const journey = visit.MonitoredVehicleJourney || {}, call = journey.MonitoredCall || {};
+    const expected = siriText(call.ExpectedDepartureTime || call.ExpectedArrivalTime);
+    const aimed = siriText(call.AimedDepartureTime || call.AimedArrivalTime);
+    const time = Date.parse(expected || aimed);
+    if (Number.isFinite(time) && time < Date.now() - 60000) continue;
+    const cancelled = /cancelled|canceled/i.test(siriText(call.DepartureStatus || call.ArrivalStatus));
+    const realtime = id === "cts" ? call.Extension?.IsRealTime === true : journey.Monitored === true || journey.Monitored === "true";
+    rows.push({ line: siriText(journey.PublishedLineName || journey.LineRef),
+      destination: siriText(journey.DestinationName || journey.DirectionName),
+      time, text: cancelled ? "Passage supprimé" : Number.isFinite(time) ? new Date(time).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "Horaire indisponible", realtime, cancelled });
+  }
+  return rows.sort((a, b) => (a.time || Infinity) - (b.time || Infinity));
+}
+function apiStopPopupHtml(active, cached, message) {
+  const provider = apiStates.get(active.stop.provider)?.provider;
+  const expired = cached && Date.now() - cached.receivedAt > 300000;
+  const rows = cached && !expired ? arrivalRows(active.stop.provider, cached.data) : [];
+  const updated = cached ? `Réception à ${new Date(cached.receivedAt).toLocaleTimeString("fr-FR")}.` : "";
+  return `<strong>${escapeHtml(active.stop.name || active.stop.ref)}</strong><div class="route-source">Arrêt · ${escapeHtml(provider?.name || "")}</div>
+    <ul class="live-arrivals">${rows.slice(0, 25).map(row => `<li><b>${escapeHtml(row.line)}</b> · ${escapeHtml(row.destination)}<br>${escapeHtml(row.text)}${row.cancelled ? "" : row.realtime ? " · temps réel" : " · théorique / non confirmé"}</li>`).join("")}</ul>
+    <div class="route-source">${expired ? "Horaires anciens masqués. " : ""}${escapeHtml(message || (cached && !rows.length && !expired ? "Aucun prochain passage disponible à cet arrêt." : ""))} ${escapeHtml(updated)}</div>
+    <div class="route-source">Position de l’arrêt. Données © <a href="${escapeHtml(provider?.docs || "#")}" target="_blank" rel="noopener noreferrer">${escapeHtml(provider?.name || "")}</a>.</div>`;
+}
+async function refreshActiveApiStop() {
+  const active = activeApiStop;
+  if (!active || !active.popup.isOpen()) return;
+  const state = apiStates.get(active.stop.provider);
+  if (!state?.key || state.inFlight) return;
+  const cached = state.cache.get(active.stop.ref);
+  const quota = currentQuota(state);
+  if (state.blocked || quota.count >= state.budget || Date.now() < quota.nextAt) {
+    const message = state.blocked || (quota.count >= state.budget ? "Budget quotidien atteint." : `Données en cache. Prochain appel possible dans ${Math.ceil((quota.nextAt - Date.now()) / 1000)} s.`);
+    active.popup.setHTML(apiStopPopupHtml(active, cached, message));
+    apiInfo(state.provider.id, message);
+    return;
+  }
+  state.inFlight = true;
+  const epoch = state.epoch;
+  try {
+    const url = new URL(state.provider.passagesUrl);
+    url.searchParams.set(state.provider.id === "ginko" ? "idArret" : "MonitoringRef", active.stop.ref);
+    if (state.provider.id === "cts") url.searchParams.set("MaximumStopVisits", "20");
+    const result = await apiJson(state, url.href);
+    if (state.epoch !== epoch) return;
+    state.cache.set(active.stop.ref, result);
+    if (activeApiStop === active && active.popup.isOpen()) active.popup.setHTML(apiStopPopupHtml(active, result));
+    apiInfo(state.provider.id, "Horaires reçus. Actualisation de l’arrêt ouvert uniquement.");
+  } catch (error) {
+    if (state.epoch !== epoch) return;
+    if (activeApiStop === active && active.popup.isOpen()) active.popup.setHTML(apiStopPopupHtml(active, cached, error.message));
+    apiInfo(state.provider.id, error.message);
+  } finally { if (state.epoch === epoch) state.inFlight = false; }
+}
+function openApiStop(stop) {
+  activeApiStop?.popup.remove();
+  const popup = new maplibregl.Popup({ maxWidth: "340px" }).setLngLat([stop.lon, stop.lat]);
+  activeApiStop = { stop, popup };
+  const cached = apiStates.get(stop.provider)?.cache.get(stop.ref);
+  popup.setHTML(apiStopPopupHtml(activeApiStop, cached, "Consultation des prochains passages…")).addTo(map);
+  void refreshActiveApiStop();
+}
+async function loadApiStops(state) {
+  if (state.stops?.length) return;
+  const epoch = state.epoch;
+  try {
+    apiInfo(state.provider.id, "Chargement des arrêts…");
+    const result = await apiJson(state, state.provider.stopsUrl, { authenticated: state.provider.id !== "prim" });
+    if (state.epoch !== epoch) return;
+    state.stops = apiStopsFromData(state.provider.id, result.data);
+    if (!state.stops.length) throw new Error("Référentiel des arrêts vide ou non reconnu.");
+    renderApiStops();
+    apiInfo(state.provider.id, `${state.stops.length} arrêts sur la carte. Zoome puis clique sur un point violet.`);
+  } catch (error) { if (state.epoch === epoch) apiInfo(state.provider.id, error.message); }
+}
+async function applyApiSettings() {
+  const settings = {};
+  $("applyApiKeys").disabled = true;
+  $("forgetApiKeys").disabled = true;
+  try {
+    for (const provider of API_PROVIDERS) {
+      const state = apiStates.get(provider.id);
+      const key = $("api-key-" + provider.id).value.trim();
+      const rawBudget = Number($("api-budget-" + provider.id).value);
+      const budget = Math.max(1, Math.min(provider.maxBudget, Number.isFinite(rawBudget) && rawBudget > 0 ? Math.floor(rawBudget) : provider.budget));
+      $("api-budget-" + provider.id).value = budget;
+      state.epoch++;
+      if (state.key !== key) state.cache.clear();
+      state.key = key; state.budget = budget; state.blocked = null; state.inFlight = false;
+      state.quotaKey = "gtfs-rt-api-quota-" + provider.id + "-" + await credentialFingerprint(key);
+      settings[provider.id] = { key, budget };
+      apiInfo(provider.id, key ? "Clé configurée." : "Clé non renseignée.");
+    }
+    activeApiStop?.popup.remove(); activeApiStop = null;
+    renderApiStops();
+    if ($("rememberApiKeys").checked) {
+      if (!putStoredJson(API_STORAGE, settings)) status("La configuration est active, mais ce navigateur ne permet pas de mémoriser les clés.", "warn");
+    } else removeStored(API_STORAGE);
+    await Promise.all(API_PROVIDERS.map(provider => {
+      const state = apiStates.get(provider.id);
+      return state.key ? loadApiStops(state) : Promise.resolve();
+    }));
+  } finally { $("applyApiKeys").disabled = false; $("forgetApiKeys").disabled = false; }
+}
+function initApiSettings() {
+  const saved = safeStoredJson(API_STORAGE, {});
+  $("rememberApiKeys").checked = Object.keys(saved).length > 0;
+  for (const provider of API_PROVIDERS) {
+    apiStates.set(provider.id, { provider, key: "", epoch: 0, cache: new Map(), stops: [], budget: provider.budget });
+    const box = document.createElement("div"); box.className = "api-provider";
+    box.innerHTML = `<b>${escapeHtml(provider.name)}</b><p class="intro">${escapeHtml(provider.help)} <a href="${provider.docs}" target="_blank" rel="noopener noreferrer">Documentation</a></p>
+      <label>Clé personnelle <input id="api-key-${provider.id}" type="password" autocomplete="off" spellcheck="false" aria-label="Clé ${escapeHtml(provider.name)}"></label>
+      <label>Budget quotidien local <input id="api-budget-${provider.id}" type="number" min="1" max="${provider.maxBudget}" value="${provider.budget}"></label>
+      <div class="api-state" id="api-state-${provider.id}">Clé non renseignée.</div>`;
+    $("apiProviders").appendChild(box);
+    $("api-key-" + provider.id).value = saved[provider.id]?.key || "";
+    $("api-budget-" + provider.id).value = saved[provider.id]?.budget || provider.budget;
+  }
+  $("applyApiKeys").addEventListener("click", () => { void applyApiSettings(); });
+  $("forgetApiKeys").addEventListener("click", () => {
+    removeStored(API_STORAGE); $("rememberApiKeys").checked = false;
+    for (const provider of API_PROVIDERS) $("api-key-" + provider.id).value = "";
+    void applyApiSettings();
+  });
+  map.on("load", renderApiStops);
+  if (Object.values(saved).some(item => item.key)) void applyApiSettings();
+}
+
+
+/* ============================================================
+   ÉVÉNEMENTS
+   ============================================================ */
+
+$("togglePanel").addEventListener("click", () => {
+  const collapsed = $("panel").classList.toggle("collapsed");
+  $("panelBody").hidden = collapsed;
+  $("togglePanel").setAttribute("aria-expanded", String(!collapsed));
+  $("togglePanel").textContent = collapsed ? "Réseaux ▾" : "Réduire ▴";
+  $("togglePanel").title = collapsed ? "Afficher les réseaux et les contrôles" : "Réduire le bandeau";
+});
+
+$("fitMap").addEventListener("click", fitCurrentNetwork);
+
+$("testAll").addEventListener(
+  "click",
+  verifyAll
+);
+
+$("stop").addEventListener("click", () => {
+  const wasVerifying = isVerifying;
+  const wasRefreshing = Boolean(refreshTimer) || refreshInProgress;
+
+  stopRequested = true;
+  stopRefresh();
+
+  if (wasVerifying) {
+    status("Arrêt demandé : la vérification s’interrompt après le lot en cours.", "warn");
+  } else if (wasRefreshing) {
+    status("Actualisation automatique arrêtée.", "warn");
+  } else {
+    status("Aucune opération à arrêter.", "warn");
+  }
+});
+
+/* ============================================================
+   DÉMARRAGE
+   ============================================================ */
+
+try {
+  initDecoder();
+  initMap();
+  initApiSettings();
+  loadGtfsRtDatasets();
+} catch (error) {
+  console.error(error);
+  status(
+    "Erreur d'initialisation : " + error.message,
+    "error"
+  );
+}
+</script>
+</body>
+</html>
